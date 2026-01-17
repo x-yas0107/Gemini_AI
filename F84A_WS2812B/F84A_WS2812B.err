@@ -1,0 +1,4 @@
+Warning[205] D:\F84A_WS2812B\F84A_WS2812B.ASM 19 : Found directive in column 1. (CBLOCK)
+Warning[205] D:\F84A_WS2812B\F84A_WS2812B.ASM 40 : Found directive in column 1. (ENDC)
+Message[302] D:\F84A_WS2812B\F84A_WS2812B.ASM 59 : Register in operand not in bank 0.  Ensure that bank bits are correct.
+Message[302] D:\F84A_WS2812B\F84A_WS2812B.ASM 61 : Register in operand not in bank 0.  Ensure that bank bits are correct.

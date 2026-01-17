@@ -1,0 +1,96 @@
+MPLINK 4.49, Linker
+Linker Map File - Created Fri Jan 16 20:23:31 2026
+
+                                 Section Info
+                  Section       Type    Address   Location Size(Bytes)
+                ---------  ---------  ---------  ---------  ---------
+                   .org_0       code   0x000000    program   0x000000
+                   .org_1       code   0x000000    program   0x0001ac
+.config_2007_F84A_WS2812B.O       code   0x002007    program   0x000002
+
+
+
+                              Program Memory Usage 
+                               Start         End      
+                           ---------   ---------      
+                            0x000000    0x0000d5      
+                            0x002007    0x002007      
+            215 out of 1094 program addresses used, program memory utilization is 19%
+
+
+
+                              Symbols - Sorted by Name
+                     Name    Address   Location    Storage File                     
+                ---------  ---------  ---------  --------- ---------                
+             BIT_LOOP_FIX   0x00007f    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   BIT_LP   0x000076    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  BYTE_LP   0x000072    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+             CLEAR_BUFFER   0x000089    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    CL_LP   0x00008d    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+               DECAY_LEDS   0x000060    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 DECAY_LP   0x000064    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  HUE2RGB   0x000092    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                     INIT   0x000001    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  KR_WAIT   0x00005e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                MAIN_LOOP   0x00000e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+              MODE_KNIGHT   0x00003f    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 MODE_OFF   0x000022    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+             MODE_RAINBOW   0x000026    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  MV_LEFT   0x00005a    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 MV_RIGHT   0x000054    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                NEXT_BYTE   0x000080    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                NO_SWITCH   0x00001d    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_1   0x000097    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_2   0x0000a6    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   REG_23   0x0000a2    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_3   0x0000b5    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 RST_WAIT   0x000085    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   R_LOOP   0x000029    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                SEND_LEDS   0x00006e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W10_L1   0x0000cf    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W10_L2   0x0000d1    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+               WAIT_100MS   0x0000c4    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                WAIT_10MS   0x0000cd    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                WAIT_50MS   0x0000ca    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 WAIT_REL   0x00001a    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W_LOOP   0x0000c6    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+
+
+
+                              Symbols - Sorted by Address
+                     Name    Address   Location    Storage File                     
+                ---------  ---------  ---------  --------- ---------                
+                     INIT   0x000001    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                MAIN_LOOP   0x00000e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 WAIT_REL   0x00001a    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                NO_SWITCH   0x00001d    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 MODE_OFF   0x000022    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+             MODE_RAINBOW   0x000026    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   R_LOOP   0x000029    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+              MODE_KNIGHT   0x00003f    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 MV_RIGHT   0x000054    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  MV_LEFT   0x00005a    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  KR_WAIT   0x00005e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+               DECAY_LEDS   0x000060    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 DECAY_LP   0x000064    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                SEND_LEDS   0x00006e    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  BYTE_LP   0x000072    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   BIT_LP   0x000076    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+             BIT_LOOP_FIX   0x00007f    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                NEXT_BYTE   0x000080    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                 RST_WAIT   0x000085    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+             CLEAR_BUFFER   0x000089    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    CL_LP   0x00008d    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                  HUE2RGB   0x000092    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_1   0x000097    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   REG_23   0x0000a2    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_2   0x0000a6    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                    REG_3   0x0000b5    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+               WAIT_100MS   0x0000c4    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W_LOOP   0x0000c6    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                WAIT_50MS   0x0000ca    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                WAIT_10MS   0x0000cd    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W10_L1   0x0000cf    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+                   W10_L2   0x0000d1    program     static D:\F84A_WS2812B\F84A_WS2812B.asm
+
+
