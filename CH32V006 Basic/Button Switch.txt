@@ -1,0 +1,10 @@
+
+
+Connect Button to Pin 10, LED to Pin 8.
+
+
+10 S = IN(10)
+20 OUT 8, S
+30 PRINT "SW:"; S
+40 WAIT 100
+50 GOTO 10
