@@ -1,0 +1,19 @@
+# UIAPduino Pocket Logic Analyzer (I2C Edition) - I/O Map
+
+**Target MCU:** UIAPduino (CH32V00x)
+**Display:** 0.96" OLED (SSD1306)
+
+| UIAPduino Pin | 内部ポート | 役割 (Role) | 簡易説明 / 備考 |
+| :--- | :--- | :--- | :--- |
+| **D0** | PA1 | LED (Read) | サンプリング（待機・記録）中に点灯させるインジケータ |
+| **D1** | PA2 | LED (Error)| エラー（NACK・通信異常）検知で点灯させるインジケータ |
+| **D3** | PC1 | OLED SDA | OLED画面描画用 (High-Speed Bit-bang) |
+| **D4** | PC2 | OLED SCL | OLED画面描画用 (High-Speed Bit-bang) |
+| **D5** | PC3 | SW1 (Left) | 波形スクロール（左） / 内部プルアップ |
+| **D6** | PC4 | SW2 (Select)| 観測開始(Arm)・決定 / 内部プルアップ |
+| **D7** | PC5 | SW3 (Right)| 波形スクロール（右） / 内部プルアップ |
+| **D8** | PC6 | Target SDA | 観測プローブ入力（I2C データ）/ ターゲットの通信を監視 |
+| **D9** | PC7 | Target SCL | 観測プローブ入力（I2C クロック）/ ターゲットの通信を監視 |
+
+*Note: 観測プローブ(D8, D9)はマイコンのハードウェアI2C機能を使わず、
+ハイインピーダンスの汎用入力として設定し、対象回路の通信を一切阻害せずにモニタリングします。*
