@@ -7,7 +7,7 @@
 ## 開発情報 (Developer Info)
 * **開発者:** yas & Gemini
 * **リリース日:** 2026年3月29日
-* **名前の由来:** 開発者yasが展開するハードウェアプロジェクト「UIAPduino」シリーズを冠し、Synthesizer（シンセサイザー）と AWG（Arbitrary Waveform Generator = 任意波形発生器）の機能を融合させたことから命名されました。
+* **名前の由来:** ハードウェアプロジェクト「UIAPduino」シリーズを冠し、Synthesizer（シンセサイザー）と AWG（Arbitrary Waveform Generator = 任意波形発生器）の機能を融合させたことから命名されました。
 
 ## 特徴 (Features)
 * **最大20点のアンカー描画:** 画面上に最大20個の点を自由に配置可能。
