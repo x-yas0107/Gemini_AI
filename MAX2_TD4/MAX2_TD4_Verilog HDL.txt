@@ -1,0 +1,73 @@
+// TD4 for Altera MAX II with Internal OSC and External ROM
+module td4_top (
+    input  wire       n_reset,    // リセット（負論理）
+    input  wire [1:0] freq_sel,   // 分周選択スイッチ
+    input  wire [7:0] rom_data,   // 外部ダイオードマトリクスからの入力 (OP[7:4], Im[3:0])
+    input  wire [3:0] sw_in,      // 入力ポート用スイッチ
+    output wire [3:0] pc_out,     // 外部マトリクス用アドレス
+    output reg  [3:0] out_port,   // 出力ポートLED
+    output wire       cpu_clk_led // 現在の動作クロック確認用LED
+);
+
+    // --- 内部オシレータのインスタンス化 ---
+    wire osc_out;
+    maxii_ufm_osc osc_inst (
+        .oscena(1'b1),
+        .osc(osc_out)
+    );
+
+    // --- 外部設定可能な分周器 ---
+    reg [25:0] divider;
+    always @(posedge osc_out or negedge n_reset) begin
+        if (!n_reset) divider <= 26'd0;
+        else          divider <= divider + 1'b1;
+    end
+
+    // freq_selによりクロックを選択
+    wire cpu_clk;
+    assign cpu_clk = (freq_sel == 2'b00) ? divider[24] : // 約0.15Hz (超低速)
+                     (freq_sel == 2'b01) ? divider[21] : // 約1.2Hz
+                     (freq_sel == 2'b10) ? divider[18] : // 約10Hz
+                                           divider[15];  // 約80Hz
+    assign cpu_clk_led = cpu_clk;
+
+    // --- TD4 レジスタとフラグ ---
+    reg [3:0] reg_a, reg_b, pc;
+    reg       c_flag;
+    assign pc_out = pc;
+
+    // --- 命令デコードと実行 ---
+    wire [3:0] op = rom_data[7:4];
+    wire [3:0] im = rom_data[3:0];
+
+    always @(posedge cpu_clk or negedge n_reset) begin
+        if (!n_reset) begin
+            reg_a <= 4'b0000;
+            reg_b <= 4'b0000;
+            out_port <= 4'b0000;
+            pc <= 4'b0000;
+            c_flag <= 1'b0;
+        end else begin
+            casez (op)
+                4'b0000: {c_flag, reg_a} <= reg_a + im;         // ADD A, Im
+                4'b0101: {c_flag, reg_b} <= reg_b + im;         // ADD B, Im
+                4'b0011: begin reg_a <= im; c_flag <= 1'b0; end // MOV A, Im
+                4'b0111: begin reg_b <= im; c_flag <= 1'b0; end // MOV B, Im
+                4'b0001: begin reg_a <= reg_b; c_flag <= 1'b0; end // MOV A, B
+                4'b0100: begin reg_b <= reg_a; c_flag <= 1'b0; end // MOV B, A
+                4'b1111: begin pc <= im; c_flag <= 1'b0; end    // JMP Im
+                4'b1110: begin if (!c_flag) pc <= im; else pc <= pc + 1'b1; c_flag <= 1'b0; end // JNC Im
+                4'b0010: begin reg_a <= sw_in; c_flag <= 1'b0; end // IN A
+                4'b0110: begin reg_b <= sw_in; c_flag <= 1'b0; end // IN B
+                4'b1011: begin out_port <= im; c_flag <= 1'b0; end // OUT Im
+                4'b1001: begin out_port <= reg_b; c_flag <= 1'b0; end // OUT B
+                default: pc <= pc + 1'b1;
+            endcase
+            
+            // JMP/JNC 以外はPCをインクリメント
+            if (op[3:2] != 2'b11) begin
+                pc <= pc + 1'b1;
+            end
+        end
+    end
+endmodule
