@@ -1,0 +1,21 @@
+Pin Number,Terminal Name / 端子名,Function (EN),機能 (JP)
+1,PD4,Not Used,未使用
+2,PD5,UART TX (Console Out),UART TX (コンソール出力)
+3,PD6,UART RX (Command In),UART RX (コマンド入力)
+4,NRST,System Reset,システムリセット
+5,PA1,ADC Channel 1 (V_sweep),ADC チャンネル1 (V_sweep 測定)
+6,PA2,ADC Channel 0 (V_ce),ADC チャンネル0 (V_ce 測定)
+7,VSS,Ground (GND),グラウンド (GND)
+8,VDD,Power Supply (5V),電源 (5V)
+9,PC1,Not Used,未使用
+10,PC2,Not Used,未使用
+11,PC3,Not Used,未使用
+12,PC4,ADC Channel 2 (V_dd),ADC チャンネル2 (V_dd 測定)
+13,PC5,Not Used,未使用
+14,PC6,Not Used,未使用
+15,PC7,Not Used,未使用
+16,PD1,SWIO (Debug),SWIO (デバッグ接続用)
+17,PD2,TIM1_CH1 PWM (Vce Control),TIM1_CH1 PWM (Vce 電圧制御用)
+18,PD3,TIM2_CH2 PWM (Ib Control),TIM2_CH2 PWM (Ib 電流制御用)
+19,PC0,Not Used,未使用
+20,PD0,Not Used,未使用

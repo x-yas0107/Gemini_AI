@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>CH32V006 Curve Tracer Pro Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* 画面全体をフルに使う設定 (スクロールバーを消す) */
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; padding: 15px; 
+            background-color: #eef2f5; color: #333; 
+            height: 100vh; /* 画面の高さを100%に */
+            box-sizing: border-box; 
+            display: flex; flex-direction: column; 
+            overflow: hidden; /* 縦スクロール禁止 */
+        }
+        
+        .header { margin-bottom: 10px; font-size: 20px; font-weight: bold; color: #2c3e50; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* メインレイアウト（左右分割） */
+        .main-layout { display: flex; flex: 1; gap: 15px; min-height: 0; }
+        
+        /* 左側のコントロールパネル群 (固定幅) */
+        .left-sidebar { 
+            width: 350px; 
+            display: flex; flex-direction: column; gap: 10px; 
+            overflow-y: auto; /* 左側だけ必要ならスクロール */
+        }
+        
+        /* 右側のグラフエリア (残りの幅すべて) */
+        .right-content { 
+            flex: 1; background: white; padding: 15px; 
+            border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); 
+            display: flex; flex-direction: column; 
+        }
+
+        .panel { background: white; padding: 12px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h3 { margin: 0 0 8px 0; font-size: 14px; border-bottom: 2px solid #3498db; padding-bottom: 4px; color: #2c3e50; }
+        
+        /* ボタン類 */
+        .btn-group { display: flex; flex-direction: column; gap: 8px; }
+        button { padding: 10px; font-size: 14px; font-weight: bold; cursor: pointer; border: none; border-radius: 4px; color: white; transition: background 0.2s; }
+        #btnConnect { background-color: #2ecc71; } #btnConnect:hover { background-color: #27ae60; }
+        #btnStart { background-color: #e74c3c; } #btnStart:hover { background-color: #c0392b; }
+        #btnRead { background-color: #3498db; } #btnRead:hover { background-color: #2980b9; }
+        button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+
+        /* スムージング設定 */
+        .smooth-settings { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+        input[type=range] { width: 100%; margin-top: 5px; }
+
+        /* メモ欄 */
+        textarea#memo { 
+            width: 100%; height: 70px; resize: none; 
+            box-sizing: border-box; padding: 8px; border: 1px solid #ccc; 
+            border-radius: 4px; font-family: inherit; font-size: 13px;
+        }
+
+        /* ログ欄（左側の余った高さをすべて埋める） */
+        .log-panel { display: flex; flex-direction: column; flex: 1; min-height: 150px; }
+        textarea#log { 
+            flex: 1; width: 100%; background: #1e1e1e; color: #00ff00; 
+            font-family: 'Courier New', Courier, monospace; font-size: 12px;
+            padding: 8px; box-sizing: border-box; border-radius: 4px; 
+            border: none; resize: none; 
+        }
+
+        .chart-container { flex: 1; position: relative; width: 100%; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <span>CH32V006 Curve Tracer Pro Dashboard</span>
+</div>
+
+<div class="main-layout">
+    <div class="left-sidebar">
+        <div class="panel">
+            <h3>1. Device Control</h3>
+            <div class="btn-group">
+                <button id="btnConnect">🔌 Connect to MCU</button>
+                <button id="btnStart" disabled>▶ Start Analysis [s]</button>
+                <button id="btnRead" disabled>📥 Read Data & Plot [r]</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>2. Smoothing Settings</h3>
+            <div class="smooth-settings">
+                <div>
+                    <strong>View Mode:</strong><br>
+                    <label><input type="radio" name="viewMode" value="raw" onchange="renderChart()"> Raw (生)</label>
+                    <label><input type="radio" name="viewMode" value="smooth" checked onchange="renderChart()"> Smooth</label>
+                    <label><input type="radio" name="viewMode" value="both" onchange="renderChart()"> Both</label>
+                </div>
+                <div style="margin-top: 8px;">
+                    <strong>Window Size: <span id="windowValue" style="color: #e74c3c; font-weight: bold;">5</span></strong>
+                    <input type="range" id="smoothWindow" min="1" max="21" step="2" value="5" oninput="document.getElementById('windowValue').innerText = this.value; renderChart();">
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>3. Memo (Notes)</h3>
+            <textarea id="memo" placeholder="測定対象の部品名や条件（例：2SC1815, hFE=150, 室温25℃）を自由にメモできます..."></textarea>
+        </div>
+
+        <div class="panel log-panel">
+            <h3>4. Serial Monitor</h3>
+            <textarea id="log" readonly></textarea>
+        </div>
+    </div>
+
+    <div class="right-content">
+        <div class="chart-container">
+            <canvas id="curveChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    let port;
+    let reader;
+    let chart;
+    let readBuffer = "";
+    let rawDataDict = {};
+    let rawVddData = [];
+
+    const btnConnect = document.getElementById('btnConnect');
+    const btnStart = document.getElementById('btnStart');
+    const btnRead = document.getElementById('btnRead');
+    const log = document.getElementById('log');
+
+    // 移動平均フィルター
+    function movingAverage(data, windowSize) {
+        if (windowSize <= 1) return data;
+        let result = [];
+        let half = Math.floor(windowSize / 2);
+        for (let i = 0; i < data.length; i++) {
+            let start = Math.max(0, i - half);
+            let end = Math.min(data.length, i + half + 1);
+            let sum = 0;
+            for (let j = start; j < end; j++) { sum += data[j]; }
+            result.push(sum / (end - start));
+        }
+        return result;
+    }
+
+    function appendLog(text) {
+        log.value += text;
+        log.scrollTop = log.scrollHeight;
+    }
+
+    // Chart.js の初期設定
+    const ctx = document.getElementById('curveChart').getContext('2d');
+    chart = new Chart(ctx, {
+        type: 'scatter',
+        data: { datasets: [] },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false, // コンテナの高さに自動で合わせる
+            scales: {
+                x: {
+                    type: 'linear', position: 'bottom',
+                    title: { display: true, text: 'Collector-Emitter Voltage : Vce (V)', font: { size: 14, weight: 'bold' } },
+                    min: 0, max: 5.0
+                },
+                y: {
+                    type: 'linear', position: 'left',
+                    title: { display: true, text: 'Collector Current : Ic (mA)', font: { size: 14, weight: 'bold' } },
+                    min: 0
+                },
+                yVdd: {
+                    type: 'linear', position: 'right',
+                    title: { display: true, text: 'Power Supply : VDD (V)', font: { size: 14, weight: 'bold' } },
+                    min: 0, max: 5.5,
+                    grid: { drawOnChartArea: false }
+                }
+            },
+            plugins: { legend: { position: 'right' } }
+        }
+    });
+
+    // Web Serial API 接続処理
+    btnConnect.addEventListener('click', async () => {
+        try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+            appendLog("System: Connected to CH32V006 (115200bps).\n");
+            
+            btnConnect.disabled = true;
+            btnStart.disabled = false;
+            btnRead.disabled = false;
+            startReading();
+        } catch (err) {
+            appendLog("System: Connection failed - " + err + "\n");
+        }
+    });
+
+    // シリアル受信ループ
+    async function startReading() {
+        const decoder = new TextDecoderStream();
+        port.readable.pipeTo(decoder.writable);
+        const inputStream = decoder.readable;
+        reader = inputStream.getReader();
+
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) {
+                    appendLog(value);
+                    processIncomingData(value);
+                }
+            }
+        } catch (error) {
+            appendLog("System: Serial Read Error - " + error + "\n");
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    // シリアル送信処理
+    async function sendCommand(cmd) {
+        if (!port || !port.writable) return;
+        const encoder = new TextEncoder();
+        const writer = port.writable.getWriter();
+        await writer.write(encoder.encode(cmd));
+        writer.releaseLock();
+    }
+
+    // ボタンイベント
+    btnStart.addEventListener('click', () => { readBuffer = ""; sendCommand('s'); });
+    btnRead.addEventListener('click', () => { 
+        readBuffer = ""; rawDataDict = {}; rawVddData = []; 
+        chart.data.datasets = []; chart.update(); sendCommand('r'); 
+    });
+
+    // データバッファリング
+    function processIncomingData(text) {
+        readBuffer += text;
+        if (readBuffer.includes("Transfer Complete")) {
+            parseData(readBuffer);
+            renderChart();
+            readBuffer = ""; 
+        }
+    }
+
+    // CSVパース
+    function parseData(dataString) {
+        const lines = dataString.split('\n');
+        rawDataDict = {}; rawVddData = [];
+
+        lines.forEach(line => {
+            const parts = line.split(',');
+            if (parts.length >= 4) {
+                const vce_mv = parseInt(parts[0].trim(), 10);
+                const ic_ua = parseInt(parts[1].trim(), 10);
+                const ib_pwm = parseInt(parts[2].trim(), 10);
+                const vdd_mv = parseInt(parts[3].trim(), 10);
+
+                if (!isNaN(vce_mv) && !isNaN(ic_ua) && !isNaN(ib_pwm) && !isNaN(vdd_mv)) {
+                    if (!rawDataDict[ib_pwm]) rawDataDict[ib_pwm] = [];
+                    rawDataDict[ib_pwm].push({ x: vce_mv / 1000.0, y: ic_ua / 1000.0 });
+                    rawVddData.push({ x: vce_mv / 1000.0, y: vdd_mv / 1000.0 });
+                }
+            }
+        });
+        
+        for (const ib in rawDataDict) { rawDataDict[ib].sort((a, b) => a.x - b.x); }
+    }
+
+    // グラフ描画
+    function renderChart() {
+        if (Object.keys(rawDataDict).length === 0) return;
+
+        const windowSize = parseInt(document.getElementById('smoothWindow').value);
+        const viewMode = document.querySelector('input[name="viewMode"]:checked').value;
+        
+        chart.data.datasets = [];
+        const colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe'];
+        let colorIndex = 0;
+
+        for (const ib in rawDataDict) {
+            const rawSeries = rawDataDict[ib];
+            const icArr = rawSeries.map(d => d.y);
+            const smoothedIcArr = movingAverage(icArr, windowSize);
+            const smoothedSeries = rawSeries.map((d, i) => ({ x: d.x, y: smoothedIcArr[i] }));
+            const color = colors[colorIndex % colors.length];
+
+            // 1. 生データのプロット
+            if (viewMode === 'raw' || viewMode === 'both') {
+                chart.data.datasets.push({
+                    label: viewMode === 'both' ? `Raw (Ib: ${ib})` : `Ib: ${ib}`,
+                    data: rawSeries, showLine: true, borderColor: color, backgroundColor: color,
+                    borderWidth: 1, borderDash: [3, 3], tension: 0, pointRadius: 2, yAxisID: 'y'
+                });
+            }
+
+            // 2. スムージングデータのプロット
+            if (viewMode === 'smooth' || viewMode === 'both') {
+                chart.data.datasets.push({
+                    label: viewMode === 'both' ? `Smooth (Ib: ${ib})` : `Ib: ${ib}`,
+                    data: smoothedSeries, showLine: true, borderColor: color, backgroundColor: color,
+                    borderWidth: 2, tension: 0.3, pointRadius: 0, yAxisID: 'y'
+                });
+            }
+            colorIndex++;
+        }
+
+        // VDDプロット
+        if (rawVddData.length > 0) {
+            chart.data.datasets.push({
+                label: `VDD (Power Supply)`, data: rawVddData,
+                showLine: false, borderColor: '#000000', backgroundColor: '#000000',
+                pointRadius: 1, yAxisID: 'yVdd'
+            });
+        }
+        chart.update();
+    }
+</script>
+</body>
+</html>
