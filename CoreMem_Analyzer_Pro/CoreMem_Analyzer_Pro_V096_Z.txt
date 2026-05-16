@@ -1,0 +1,361 @@
+/**
+ * ============================================================================
+ * Project: Core Memory Checker (CoreMem_Analyzer_Pro)
+ * Version: V0.96_Z | 2026.05.16 |
+ * シリアル通信専用・汎用OPアンプ(内部抵抗切離)・完全同期ロジック
+ * ----------------------------------------------------------------------------
+ * [History]
+ * Ver 0.75: ピン指定をCHP0(PA2)へ修正、OPA_Unlock()追加、生波形観測のためバイアス無効化。
+ * Ver 0.76: UI利便性向上。ゲイン(g)・バイアス(b)コマンドの即時反映および状態通知。
+ * Ver 0.77: OPAの動的設定時に発生するVDD張り付きバグ解消のため、ハードウェア停止・リセット処理を追加。
+ * Ver 0.78: (欠番: 致命的なロック順序ミスによりOPAが起動しないバグ発生)
+ * Ver 0.79: 設定変更時の不安定化を解消。OPA_Cmd(ENABLE)の「後」に OPA_Lock() を実行し、Delay_Ms(2) で安定待ちを追加。
+ * Ver 0.80: PGA正常動作のための設定漏れを修正。OPA_StructInitの適用および、PGADIF=ON(PGA差動ルーティング)を追加。
+ * Ver 0.81: (Hotfix) PGADIF=ONによる入力フローティング問題を修正(OFFへ)。5V単電源動作に合わせ、ポテンショメータ入力時の安定化。
+ * Ver 0.82: 内部PGAモードを廃止し「汎用オペアンプ」として解放。FB_OFFにより内部抵抗を切り離し、外部回路による自由な増幅・バイアスに対応。
+ * Ver 0.83: ピンアサインの致命的誤りを修正。OPA_N0(マイナス入力)をPin 5(PA1)に訂正。
+ * Ver 0.86: V0.83の完全同期ロジック・ピンアサインを完全に維持し、V0.85仕様（独立パルス設定、キャリブレーション、ダミー波形生成、コマンド追加）のみを統合。
+ * Ver 0.95: UI(V0.95)との完全同期。ハルシネーションによる改悪を破棄し、V0.86の安定した通信解析ロジックと絶対インデックス出力形式を完全復元。
+ * ----------------------------------------------------------------------------
+ * [Pin Assignment (CH32V006F8P)]
+ * Pin  6 (PA2) : OPA_P0 (プラス入力: 外部回路からの信号)
+ * Pin  5 (PA1) : OPA_N0 (マイナス入力: 外部帰還抵抗をここに接続)
+ * Pin  1 (PD4) : OPA_OUT0 (出力: 外部帰還抵抗 兼 ピークホールド回路へ)
+ * Pin 14 (PC4) : ADC_IN2 (ピークホールド後の電圧を再入力)
+ * Pin 13 (PC3) : SYNC_MONITOR (測定同期確認用モニタ出力)
+ * Pin  8 (PD0) : SET_PULSE (CH1N)
+ * Pin 19 (PD2) : RST_PULSE (CH1)
+ * Pin  2 (PD5) : USART1_TX (PCとのシリアル通信)
+ * Pin  3 (PD6) : USART1_RX (PCとのシリアル通信)
+ * Pin 18 (PD1) : SWIO (システム固定)
+ * ============================================================================
+ */
+
+#include "debug.h"
+#include "ch32v00X_opa.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+/* --- 物理ピン定義 (CH32V006F8P) --- */
+#define OPA_IN_P_PIN     GPIO_Pin_2 // PA2 (Pin 6)
+#define OPA_IN_N_PIN     GPIO_Pin_1 // PA1 (Pin 5) 
+#define OPA_OUT_PIN      GPIO_Pin_4 // PD4 (Pin 1)
+#define SENSE_ADC_PIN    GPIO_Pin_4 // PC4 (Pin 14)
+#define SYNC_MONITOR_PIN GPIO_Pin_3 // PC3 (Pin 13)
+#define SET_PULSE_PIN    GPIO_Pin_0 // PD0 (Pin 8)
+#define RST_PULSE_PIN    GPIO_Pin_2 // PD2 (Pin 19)
+
+#define SAMPLE_SIZE      256
+#define RX_BUF_SIZE      64
+
+uint16_t g_adc_buffer[SAMPLE_SIZE];
+volatile uint8_t g_capture_done = 0;
+uint8_t CSV_Mode = 0;
+
+/* --- 動的パラメータ (独立化) --- */
+uint16_t g_width_set = 30;
+uint16_t g_width_rst = 30;
+uint16_t g_width_chk = 2;
+uint16_t g_adc_delay = 20;
+
+uint16_t g_adc_offset = 2048; // キャリブレーション用
+
+volatile uint16_t g_actual_pls_start = 0;
+volatile uint16_t g_actual_pls_end = 0;
+
+/* --- OPA状態保持 --- */
+uint8_t g_current_gain = 8;
+uint8_t g_current_bias = 0; 
+
+/* --- UARTリングバッファ --- */
+volatile char rx_ring_buf[RX_BUF_SIZE];
+volatile uint8_t rx_head = 0;
+volatile uint8_t rx_tail = 0;
+
+void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USART1_IRQHandler(void) {
+    if(USART_GetFlagStatus(USART1, USART_FLAG_ORE) != RESET) {
+        USART_ReceiveData(USART1);
+    }
+    if(USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
+        rx_ring_buf[rx_head] = USART_ReceiveData(USART1);
+        rx_head = (rx_head + 1) % RX_BUF_SIZE;
+    }
+}
+
+/**
+ * @brief OPAを汎用オペアンプとして設定。内部抵抗を切り離し、外部ピンを有効化。
+ */
+void OPA_PGA_Config(uint8_t gain_val, uint8_t bias_en) {
+    OPA_Unlock();
+    OPA_Cmd(DISABLE); 
+
+    OPA_InitTypeDef OPA_InitStructure;
+    OPA_StructInit(&OPA_InitStructure); 
+
+    OPA_InitStructure.PSEL = CHP0;         // プラス入力: PA2 (Pin 6)
+    OPA_InitStructure.NSEL = CHN0;         // マイナス入力: PA1 (Pin 5)
+    OPA_InitStructure.Mode = OUT_IO_OUT0;  // 出力: PD4 (Pin 1)
+    OPA_InitStructure.OPA_HS = HS_ON;      // ハイスピードモードON
+    OPA_InitStructure.FB = FB_OFF;         // 内部帰還抵抗を切り離し(汎用OPアンプ化)
+    OPA_InitStructure.PGADIF = PGADIF_OFF; 
+    OPA_InitStructure.PGA_VBEN = PGA_VBEN_OFF; // 内部バイアス無効(外部で設定)
+
+    OPA_Init(&OPA_InitStructure);
+    
+    OPA_Cmd(ENABLE); 
+    OPA_Lock();      
+    
+    Delay_Ms(2);
+}
+
+void Analyzer_Init(void) {
+    RCC_PB2PeriphClockCmd(RCC_PB2Periph_GPIOA | RCC_PB2Periph_GPIOC | RCC_PB2Periph_GPIOD | RCC_PB2Periph_ADC1 | RCC_PB2Periph_TIM1 | RCC_PB2Periph_AFIO, ENABLE);
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+    GPIO_InitTypeDef G = {0};
+    G.GPIO_Pin = SET_PULSE_PIN | RST_PULSE_PIN; 
+    G.GPIO_Mode = GPIO_Mode_AF_PP; 
+    G.GPIO_Speed = GPIO_Speed_30MHz; 
+    GPIO_Init(GPIOD, &G);
+    G.GPIO_Pin = OPA_IN_P_PIN | OPA_IN_N_PIN; G.GPIO_Mode = GPIO_Mode_AIN; GPIO_Init(GPIOA, &G);
+    G.GPIO_Pin = OPA_OUT_PIN; G.GPIO_Mode = GPIO_Mode_AIN; GPIO_Init(GPIOD, &G);
+    G.GPIO_Pin = SENSE_ADC_PIN; G.GPIO_Mode = GPIO_Mode_AIN; GPIO_Init(GPIOC, &G);
+    
+    G.GPIO_Pin = SYNC_MONITOR_PIN; 
+    G.GPIO_Mode = GPIO_Mode_Out_PP; 
+    G.GPIO_Speed = GPIO_Speed_30MHz; 
+    GPIO_Init(GPIOC, &G);
+    GPIO_ResetBits(GPIOC, SYNC_MONITOR_PIN);
+    
+    OPA_PGA_Config(g_current_gain, g_current_bias);
+    
+    ADC_InitTypeDef A = {0};
+    A.ADC_Mode = ADC_Mode_Independent; 
+    A.ADC_ScanConvMode = DISABLE; 
+    A.ADC_ContinuousConvMode = ENABLE;
+    A.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+    A.ADC_DataAlign = ADC_DataAlign_Right;
+    A.ADC_NbrOfChannel = 1; 
+    ADC_Init(ADC1, &A); 
+    
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_2, 1, ADC_SampleTime_CyclesMode0);
+    
+    ADC_DMACmd(ADC1, ENABLE);
+    ADC_Cmd(ADC1, ENABLE);
+
+    DMA_InitTypeDef D = {0};
+    D.DMA_PeripheralBaseAddr = (uint32_t)&ADC1->RDATAR; 
+    D.DMA_MemoryBaseAddr = (uint32_t)g_adc_buffer;
+    D.DMA_DIR = DMA_DIR_PeripheralSRC; 
+    D.DMA_BufferSize = SAMPLE_SIZE; 
+    D.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+    D.DMA_MemoryInc = DMA_MemoryInc_Enable;
+    D.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord; 
+    D.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;
+    D.DMA_Mode = DMA_Mode_Normal; 
+    D.DMA_Priority = DMA_Priority_High;
+    DMA_Init(DMA1_Channel1, &D);
+
+    TIM_TimeBaseInitTypeDef TB = {0};
+    TB.TIM_Period = 60000; TB.TIM_Prescaler = 0; TIM_TimeBaseInit(TIM1, &TB);
+    
+    TIM_OCInitTypeDef OC = {0};
+    OC.TIM_OCMode = TIM_OCMode_PWM1;
+    OC.TIM_OutputState = TIM_OutputState_Enable;
+    OC.TIM_OutputNState = TIM_OutputNState_Enable; 
+    OC.TIM_Pulse = 30; // Initialize with a default value
+    OC.TIM_OCPolarity = TIM_OCPolarity_High;
+    OC.TIM_OCNPolarity = TIM_OCPolarity_High;
+    TIM_OC1Init(TIM1, &OC); 
+    TIM_SelectOnePulseMode(TIM1, TIM_OPMode_Single);
+}
+
+void Analyzer_Execute(uint8_t is_rst, uint16_t pulse_ticks) {
+    for(int i = 0; i < SAMPLE_SIZE; i++) g_adc_buffer[i] = 0;
+    TIM_SetCompare1(TIM1, pulse_ticks);
+    TIM_SetAutoreload(TIM1, 60000); 
+    
+    if(is_rst) { 
+        TIM_CCxCmd(TIM1, TIM_Channel_1, TIM_CCx_Enable);
+        TIM_CCxNCmd(TIM1, TIM_Channel_1, TIM_CCxN_Disable);
+    } else { 
+        TIM_CCxCmd(TIM1, TIM_Channel_1, TIM_CCx_Disable); 
+        TIM_CCxNCmd(TIM1, TIM_Channel_1, TIM_CCxN_Enable);
+    }
+    
+    TIM_Cmd(TIM1, DISABLE); 
+    TIM_SetCounter(TIM1, 0); 
+    TIM_ClearFlag(TIM1, TIM_FLAG_Update | TIM_FLAG_CC1); 
+
+    ADC_Cmd(ADC1, DISABLE);
+    ADC_Cmd(ADC1, ENABLE);
+    DMA_Cmd(DMA1_Channel1, DISABLE);
+    DMA_ClearFlag(DMA1_FLAG_TC1 | DMA1_FLAG_HT1 | DMA1_FLAG_TE1);
+    DMA1_Channel1->MADDR = (uint32_t)g_adc_buffer;
+    DMA1_Channel1->CNTR = SAMPLE_SIZE; 
+    DMA_Cmd(DMA1_Channel1, ENABLE);
+    
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+    if(g_adc_delay > 0) Delay_Us(g_adc_delay);
+
+    __disable_irq(); 
+    uint32_t sync_base = DMA1_Channel1->CNTR;
+    while(DMA1_Channel1->CNTR == sync_base); 
+
+    uint32_t c_start = DMA1_Channel1->CNTR;
+    GPIO_SetBits(GPIOC, SYNC_MONITOR_PIN);
+
+    TIM_CtrlPWMOutputs(TIM1, ENABLE);
+    TIM1->CTLR1 |= TIM_CEN; 
+
+    while(TIM_GetFlagStatus(TIM1, TIM_FLAG_CC1) == RESET);
+    uint32_t c_end = DMA1_Channel1->CNTR;
+    GPIO_ResetBits(GPIOC, SYNC_MONITOR_PIN);
+    __enable_irq();
+    if(c_start <= SAMPLE_SIZE) g_actual_pls_start = SAMPLE_SIZE - c_start;
+    else g_actual_pls_start = 0;
+    if(c_end <= SAMPLE_SIZE) g_actual_pls_end = SAMPLE_SIZE - c_end;
+    else g_actual_pls_end = 0;
+
+    volatile uint32_t timeout = 5000000;
+    while(DMA_GetFlagStatus(DMA1_FLAG_TC1) == RESET && timeout > 0) timeout--;
+    
+    DMA_ClearFlag(DMA1_FLAG_TC1);
+    ADC_SoftwareStartConvCmd(ADC1, DISABLE);
+    TIM_CtrlPWMOutputs(TIM1, DISABLE); 
+    TIM_Cmd(TIM1, DISABLE);
+    TIM_CCxCmd(TIM1, TIM_Channel_1, TIM_CCx_Disable); 
+    TIM_CCxNCmd(TIM1, TIM_Channel_1, TIM_CCxN_Disable);
+
+    g_capture_done = 1;
+}
+
+void Calibrate_Offset(void) {
+    uint32_t sum = 0;
+    for(int i = 0; i < 16; i++) {
+        ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+        while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC) == RESET);
+        sum += ADC_GetConversionValue(ADC1);
+        ADC_SoftwareStartConvCmd(ADC1, DISABLE);
+        Delay_Ms(1);
+    }
+    g_adc_offset = sum / 16;
+    printf("Calib Offset: %u\r\n", g_adc_offset);
+}
+
+void Generate_Dummy_Data(void) {
+    g_actual_pls_start = 20;
+    g_actual_pls_end = 20 + 30; // Dummy pulse width 30
+    for(int i = 0; i < SAMPLE_SIZE; i++) {
+        if(i < 20) g_adc_buffer[i] = g_adc_offset;
+        else if(i < 50)  g_adc_buffer[i] = g_adc_offset + (i - 20) * 30;
+        else if(i < 80)  g_adc_buffer[i] = g_adc_offset + 900 - (i - 50) * 60;
+        else if(i < 110) g_adc_buffer[i] = g_adc_offset - 900 + (i - 80) * 30;
+        else g_adc_buffer[i] = g_adc_offset;
+    }
+}
+
+uint32_t Get_Peak_Voltage(void) {
+    int32_t max_val = 0;
+    int32_t base = g_adc_buffer[0];
+    for(int i = 0; i < SAMPLE_SIZE; i++) {
+        int32_t diff = (int32_t)g_adc_buffer[i] - base;
+        if(diff < 0) diff = -diff;
+        if(diff > max_val) max_val = diff;
+    }
+    return (max_val * 5000) / 4095;
+}
+
+void Dump_Raw_Data(void) {
+    if (CSV_Mode) {
+        printf("---CSV START---\r\n");
+        for(int i = 0; i < SAMPLE_SIZE; i++) {
+            printf("%d,%d\r\n", i, g_adc_buffer[i]);
+        }
+        printf("---CSV END---\r\n");
+    } else {
+        printf("\r\n--- RAW DATA DUMP ---\r\n");
+        for(int i = 0; i < SAMPLE_SIZE; i++) {
+            uint16_t s1  = g_adc_buffer[i];
+            uint8_t pls = (i >= g_actual_pls_start && i <= g_actual_pls_end) ? 1 : 0;
+            printf("[%03d] S1:%4u, PLS:%d\r\n", i, s1, pls);
+            Delay_Ms(2);
+        }
+        printf("--- DUMP END ---\r\n");
+    }
+}
+
+int main(void) {
+    SystemInit();
+    Delay_Init(); USART_Printf_Init(115200);
+
+    USART1->CTLR1 |= USART_CTLR1_RE;
+    NVIC_InitTypeDef NVIC_InitStructure = {0};
+    NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&NVIC_InitStructure);
+
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    
+    printf("\r\nCoreMem Analyzer V0.95 Ready.\r\n");
+    Analyzer_Init();
+    while(1) {
+        while(rx_tail != rx_head) {
+            static char cmd_buf[16];
+            static uint8_t cmd_idx = 0;
+            static uint8_t cmd_state = 0;
+            char cmd = rx_ring_buf[rx_tail];
+            rx_tail = (rx_tail + 1) % RX_BUF_SIZE;
+            
+            if (cmd_state == 0) {
+                if (cmd == 's' || cmd == 'r' || cmd == 'h' || cmd == 'd' || cmd == 'g' || cmd == 'b') {
+                    cmd_buf[0] = cmd;
+                    cmd_idx = 1;
+                    cmd_state = 1;
+                } else {
+                    switch(cmd) {
+                        case '1': printf("RUN: SWEEP (N/A)\r\n"); break;
+                        case '2': Analyzer_Execute(0, g_width_set); printf("Single SET: %u mV\r\n", (unsigned int)Get_Peak_Voltage()); Dump_Raw_Data(); break;
+                        case '3': Calibrate_Offset(); break;
+                        case '4': CSV_Mode = !CSV_Mode; break;
+                        case '5': Dump_Raw_Data(); break;
+                        case '6': Generate_Dummy_Data(); printf("RUN: DUMMY\r\n"); Dump_Raw_Data(); break;
+                        case '7': Analyzer_Execute(0, g_width_set); printf("RUN: SET\r\n"); Dump_Raw_Data(); break;
+                        case '8': Analyzer_Execute(1, g_width_rst); printf("RUN: RST\r\n"); Dump_Raw_Data(); break;
+                        case '9': Analyzer_Execute(0, g_width_chk); printf("RUN: CHK\r\n"); Dump_Raw_Data(); break;
+                        case 'v': printf("\r\nCoreMem Analyzer V0.95 Ready.\r\n"); break;
+                    }
+                }
+            } else {
+                if (cmd >= '0' && cmd <= '9') {
+                    if (cmd_idx < 15) cmd_buf[cmd_idx++] = cmd;
+                } else if (cmd == '\n' || cmd == '\r' || cmd == ' ') {
+                    cmd_buf[cmd_idx] = '\0';
+                    if (cmd_buf[0] == 's') {
+                        g_width_set = atoi(&cmd_buf[1]);
+                        printf("SetWidth: %u\r\n", g_width_set);
+                    } else if (cmd_buf[0] == 'r') {
+                        g_width_rst = atoi(&cmd_buf[1]);
+                        printf("RstWidth: %u\r\n", g_width_rst);
+                    } else if (cmd_buf[0] == 'h') {
+                        g_width_chk = atoi(&cmd_buf[1]);
+                        printf("ChkWidth: %u\r\n", g_width_chk);
+                    } else if (cmd_buf[0] == 'd') {
+                        g_adc_delay = atoi(&cmd_buf[1]);
+                        printf("AdcDelay: %u\r\n", g_adc_delay);
+                    } else if (cmd_buf[0] == 'g') {
+                        printf("SYS: Gain fixed by external resistors.\r\n");
+                    } else if (cmd_buf[0] == 'b') {
+                        printf("SYS: Bias fixed by external resistors.\r\n");
+                    }
+                    cmd_state = 0;
+                } else {
+                    cmd_state = 0;
+                }
+            }
+        }
+        Delay_Ms(10);
+    }
+}
