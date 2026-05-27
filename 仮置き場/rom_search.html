@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>リアルタイム・バイナリビューアー (24bpp完全網羅＋CMYK＋ビットシフト版)</title>
+    <style>
+        body { font-family: sans-serif; background-color: #e0e5ec; margin: 20px; }
+        .control-panel { 
+            background: #ffffff; 
+            padding: 20px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            margin-bottom: 20px; 
+            max-width: 850px;
+        }
+        .control-group { 
+            margin-bottom: 15px; 
+            display: flex; 
+            align-items: center; 
+        }
+        label { width: 200px; font-weight: bold; color: #333; }
+        input[type="number"], select { 
+            width: 260px; 
+            padding: 5px; 
+            margin-right: 15px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+        }
+        input[type="range"] { flex-grow: 1; margin-right: 15px; }
+        canvas { 
+            background: #000; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); 
+            image-rendering: pixelated; 
+            border: 2px solid #333;
+        }
+        .guide {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+<div class="control-panel">
+    <div class="control-group">
+        <label>ROMファイルを選択:</label>
+        <input type="file" id="fileInput" accept=".bin,.rom,*">
+    </div>
+    <div class="control-group">
+        <label>カラーモード:</label>
+        <select id="colorMode">
+            <optgroup label="8bpp / 16bpp">
+                <option value="gray">8bpp 白黒</option>
+                <option value="rgb332">8bpp カラー (RGB332)</option>
+                <option value="rgb565">16bpp カラー (RGB565 標準)</option>
+                <option value="rgb565_rev">16bpp カラー (バイト順反転)</option>
+                <option value="bgr565">16bpp カラー (BGR565 赤青逆転)</option>
+            </optgroup>
+            <optgroup label="24bpp フルカラー (全パターン)">
+                <option value="rgb888" selected>24bpp RGB888</option>
+                <option value="bgr888">24bpp BGR888</option>
+                <option value="grb888">24bpp GRB888</option>
+                <option value="gbr888">24bpp GBR888</option>
+                <option value="brg888">24bpp BRG888</option>
+                <option value="rbg888">24bpp RBG888</option>
+            </optgroup>
+            <optgroup label="CMYK (印刷・反転系)">
+                <option value="cmy888">24bpp CMY (Kなし/反転RGB)</option>
+                <option value="cmyk8888">32bpp CMYK (4バイト/ピクセル)</option>
+            </optgroup>
+            <optgroup label="YUV (ビデオ系)">
+                <option value="yuv888">24bpp YUV (4:4:4)</option>
+                <option value="yuv">16bpp YUV (YUYV配列)</option>
+                <option value="uyvy">16bpp YUV (UYVY配列)</option>
+                <option value="vyuy">16bpp YUV (VYUY配列)</option>
+                <option value="yvyu">16bpp YUV (YVYU配列)</option>
+            </optgroup>
+        </select>
+    </div>
+    <div class="control-group">
+        <label>オフセット (開始位置):</label>
+        <input type="number" id="offsetNum" value="0" min="0">
+        <input type="range" id="offsetSlider" value="0" min="0" step="1">
+    </div>
+    <div class="control-group">
+        <label>ビットシフト (0-7):</label>
+        <input type="number" id="bitOffsetNum" value="0" min="0" max="7">
+        <input type="range" id="bitOffsetSlider" value="0" min="0" max="7" step="1">
+    </div>
+    <div class="control-group">
+        <label>横幅 (Width):</label>
+        <input type="number" id="widthNum" value="240" min="1" max="2000">
+        <input type="range" id="widthSlider" value="240" min="1" max="2000" step="1">
+    </div>
+    <div class="guide">
+        【使い方】<br>
+        1. ファイルを読み込み、横幅を調整します。<br>
+        2. 24bppの各パターンや、新しく追加したCMY/CMYKモードを試せます。<br>
+        3. ビットシフト(0〜7)を動かすことで、バイト境界にないデータも抽出可能です。
+    </div>
+</div>
+
+<canvas id="screen"></canvas>
+
+<script>
+    let romData = null;
+    const screen = document.getElementById('screen');
+    const ctx = screen.getContext('2d');
+    
+    const fileInput = document.getElementById('fileInput');
+    const colorMode = document.getElementById('colorMode');
+    const offsetNum = document.getElementById('offsetNum');
+    const offsetSlider = document.getElementById('offsetSlider');
+    const bitOffsetNum = document.getElementById('bitOffsetNum');
+    const bitOffsetSlider = document.getElementById('bitOffsetSlider');
+    const widthNum = document.getElementById('widthNum');
+    const widthSlider = document.getElementById('widthSlider');
+
+    const DISPLAY_HEIGHT = 800; 
+
+    function clamp(val) {
+        return Math.max(0, Math.min(255, val));
+    }
+
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            romData = new Uint8Array(event.target.result);
+            offsetSlider.max = romData.length;
+            offsetNum.max = romData.length;
+            draw();
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    colorMode.addEventListener('change', draw);
+    offsetNum.addEventListener('input', () => { offsetSlider.value = offsetNum.value; draw(); });
+    offsetSlider.addEventListener('input', () => { offsetNum.value = offsetSlider.value; draw(); });
+    bitOffsetNum.addEventListener('input', () => { bitOffsetSlider.value = bitOffsetNum.value; draw(); });
+    bitOffsetSlider.addEventListener('input', () => { bitOffsetNum.value = bitOffsetSlider.value; draw(); });
+    widthNum.addEventListener('input', () => { widthSlider.value = widthNum.value; draw(); });
+    widthSlider.addEventListener('input', () => { widthNum.value = widthSlider.value; draw(); });
+
+    function draw() {
+        if (!romData) return;
+
+        const width = parseInt(widthNum.value, 10);
+        const offset = parseInt(offsetNum.value, 10);
+        const bitShift = parseInt(bitOffsetNum.value, 10);
+        const mode = colorMode.value;
+        
+        if (width <= 0) return;
+
+        screen.width = width;
+        screen.height = DISPLAY_HEIGHT;
+
+        const imgData = ctx.createImageData(width, DISPLAY_HEIGHT);
+        const data = imgData.data;
+
+        const getByte = (idx) => {
+            if (bitShift === 0) return romData[idx];
+            if (idx + 1 >= romData.length) return (romData[idx] << bitShift) & 0xFF;
+            return ((romData[idx] << bitShift) | (romData[idx + 1] >> (8 - bitShift))) & 0xFF;
+        };
+
+        let romIndex = offset;
+        
+        for (let i = 0; i < width * DISPLAY_HEIGHT; i++) {
+            if (romIndex >= romData.length) break;
+            const pixelIndex = i * 4;
+
+            if (mode === 'gray') {
+                const color = getByte(romIndex);
+                data[pixelIndex] = data[pixelIndex+1] = data[pixelIndex+2] = color;
+                data[pixelIndex+3] = 255;
+                romIndex++;
+            } else if (mode === 'rgb332') {
+                const color = getByte(romIndex);
+                data[pixelIndex]   = ((color & 0xE0) >> 5) * 255 / 7;
+                data[pixelIndex+1] = ((color & 0x1C) >> 2) * 255 / 7;
+                data[pixelIndex+2] = (color & 0x03) * 255 / 3;
+                data[pixelIndex+3] = 255;
+                romIndex++;
+            } else if (mode === 'rgb565') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = getByte(romIndex) | (getByte(romIndex + 1) << 8);
+                data[pixelIndex]   = ((val >> 11) & 0x1F) * 255 / 31;
+                data[pixelIndex+1] = ((val >> 5) & 0x3F) * 255 / 63;
+                data[pixelIndex+2] = (val & 0x1F) * 255 / 31;
+                data[pixelIndex+3] = 255;
+                romIndex += 2;
+            } else if (mode === 'rgb565_rev') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = (getByte(romIndex) << 8) | getByte(romIndex + 1);
+                data[pixelIndex]   = ((val >> 11) & 0x1F) * 255 / 31;
+                data[pixelIndex+1] = ((val >> 5) & 0x3F) * 255 / 63;
+                data[pixelIndex+2] = (val & 0x1F) * 255 / 31;
+                data[pixelIndex+3] = 255;
+                romIndex += 2;
+            } else if (mode === 'bgr565') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = getByte(romIndex) | (getByte(romIndex + 1) << 8);
+                data[pixelIndex]   = (val & 0x1F) * 255 / 31;
+                data[pixelIndex+1] = ((val >> 5) & 0x3F) * 255 / 63;
+                data[pixelIndex+2] = ((val >> 11) & 0x1F) * 255 / 31;
+                data[pixelIndex+3] = 255;
+                romIndex += 2;
+            } else if (mode === 'rgb888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex); data[pixelIndex+1] = getByte(romIndex+1); data[pixelIndex+2] = getByte(romIndex+2);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'bgr888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex+2); data[pixelIndex+1] = getByte(romIndex+1); data[pixelIndex+2] = getByte(romIndex);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'grb888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex+1); data[pixelIndex+1] = getByte(romIndex); data[pixelIndex+2] = getByte(romIndex+2);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'gbr888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex+2); data[pixelIndex+1] = getByte(romIndex); data[pixelIndex+2] = getByte(romIndex+1);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'brg888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex+1); data[pixelIndex+1] = getByte(romIndex+2); data[pixelIndex+2] = getByte(romIndex);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'rbg888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex); data[pixelIndex+1] = getByte(romIndex+2); data[pixelIndex+2] = getByte(romIndex+1);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'cmy888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = 255 - getByte(romIndex); data[pixelIndex+1] = 255 - getByte(romIndex+1); data[pixelIndex+2] = 255 - getByte(romIndex+2);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (mode === 'cmyk8888') {
+                if (romIndex + 3 >= romData.length) break;
+                const c = getByte(romIndex)/255, m = getByte(romIndex+1)/255, y = getByte(romIndex+2)/255, k = getByte(romIndex+3)/255;
+                data[pixelIndex] = 255 * (1-c) * (1-k); data[pixelIndex+1] = 255 * (1-m) * (1-k); data[pixelIndex+2] = 255 * (1-y) * (1-k);
+                data[pixelIndex+3] = 255; romIndex += 4;
+            } else if (mode === 'yuv888') {
+                if (romIndex + 2 >= romData.length) break;
+                let y = getByte(romIndex), u = getByte(romIndex+1)-128, v = getByte(romIndex+2)-128;
+                data[pixelIndex] = clamp(y + 1.402 * v); data[pixelIndex+1] = clamp(y - 0.344 * u - 0.714 * v); data[pixelIndex+2] = clamp(y + 1.772 * u);
+                data[pixelIndex+3] = 255; romIndex += 3;
+            } else if (['yuv', 'uyvy', 'vyuy', 'yvyu'].includes(mode)) {
+                let blockIndex = Math.floor(i / 2) * 4;
+                let b = offset + blockIndex;
+                if (b + 3 >= romData.length) break;
+                let y, u, v;
+                if (mode === 'yuv') { y = (i%2===0?getByte(b):getByte(b+2)); u = getByte(b+1)-128; v = getByte(b+3)-128; }
+                else if (mode === 'uyvy') { u = getByte(b)-128; y = (i%2===0?getByte(b+1):getByte(b+3)); v = getByte(b+2)-128; }
+                else if (mode === 'vyuy') { v = getByte(b)-128; y = (i%2===0?getByte(b+1):getByte(b+3)); u = getByte(b+2)-128; }
+                else if (mode === 'yvyu') { y = (i%2===0?getByte(b):getByte(b+2)); v = getByte(b+1)-128; u = getByte(b+3)-128; }
+                data[pixelIndex] = clamp(y + 1.402 * v); data[pixelIndex+1] = clamp(y - 0.344 * u - 0.714 * v); data[pixelIndex+2] = clamp(y + 1.772 * u);
+                data[pixelIndex+3] = 255; romIndex += 2;
+            }
+        }
+        ctx.putImageData(imgData, 0, 0);
+    }
+</script>
+</body>
+</html>
