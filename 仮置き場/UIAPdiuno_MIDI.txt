@@ -1,0 +1,281 @@
+/*********************************************************************
+ * File Name        : main.c
+ * Version          : 0.03
+ * Date             : 2026-05-03
+ * Description      : CH32V006 Internal ROM 4-Song Jukebox with 4-Button Control
+ * Change History   :
+ * - V0.01: Initial implementation.
+ * - V0.02: Fixed peripheral clock register names and NVIC macros.
+ * - V0.03: Implemented 4-button control (PD4, PD5, PD6, PD2) and 4 internal 
+ * ROM chip-tune sequences (Techno, Bass, Fantasy, Stereo-X).
+ **********************************************************************/
+#include "debug.h"
+#include "ch32v00x.h"
+
+/* シンセサイザー構造体 */
+typedef struct {
+    uint32_t phase;
+    uint32_t delta;
+    uint8_t  volume;
+    uint8_t  pan_l;
+    uint8_t  pan_r;
+} PSG_Channel_t;
+
+volatile PSG_Channel_t channels[4];
+volatile uint32_t sample_ticks = 0;
+
+/* 楽譜データ構造体 (1ステップあたり4チャンネル分) */
+typedef struct {
+    uint8_t note[4];
+} Step_t;
+
+/* 1. テクノ系 (高速ピコピコ＆擬似ドラム) */
+const Step_t song_techno[16] = {
+    {{60, 67, 36, 0}}, {{0,  72, 0,  0}}, {{63, 67, 36, 0}}, {{0,  72, 0,  0}},
+    {{65, 70, 41, 0}}, {{0,  74, 0,  0}}, {{67, 72, 43, 0}}, {{0,  76, 0,  0}},
+    {{60, 67, 36, 0}}, {{0,  72, 0,  0}}, {{63, 67, 36, 0}}, {{0,  72, 0,  0}},
+    {{68, 75, 44, 0}}, {{67, 74, 43, 0}}, {{65, 72, 41, 0}}, {{63, 70, 39, 0}}
+};
+
+/* 2. 低音重視したかっこいいやつ (重厚シンセベース・グルーヴ) */
+const Step_t song_bass[16] = {
+    {{48, 0, 36, 0}}, {{0,  0, 36, 0}}, {{51, 0, 39, 0}}, {{0,  0, 36, 0}},
+    {{53, 0, 41, 0}}, {{0,  0, 41, 0}}, {{55, 0, 43, 0}}, {{56, 0, 44, 0}},
+    {{48, 0, 36, 0}}, {{0,  0, 36, 0}}, {{51, 0, 39, 0}}, {{0,  0, 36, 0}},
+    {{46, 0, 34, 0}}, {{46, 0, 34, 0}}, {{47, 0, 35, 0}}, {{47, 0, 35, 0}}
+};
+
+/* 3. 幻想的なやつ (高音アルペジオ＆エコー残響空間) */
+const Step_t song_fantasy[16] = {
+    {{72, 76, 60, 0}}, {{0,  0,  0,  0}}, {{74, 79, 62, 0}}, {{0,  0,  0,  0}},
+    {{76, 81, 64, 0}}, {{0,  0,  0,  0}}, {{79, 84, 67, 0}}, {{0,  0,  0,  0}},
+    {{81, 86, 69, 0}}, {{0,  0,  0,  0}}, {{79, 84, 67, 0}}, {{0,  0,  0,  0}},
+    {{76, 81, 64, 0}}, {{0,  0,  0,  0}}, {{74, 79, 62, 0}}, {{0,  0,  0,  0}}
+};
+
+/* 4. チャンネルフル活用でL,Rを楽しめるもの (ピンポン・ステレオ・クロスフォール) */
+const Step_t song_stereo[16] = {
+    {{60, 64, 48, 0}}, {{62, 66, 50, 0}}, {{64, 67, 52, 0}}, {{67, 71, 55, 0}},
+    {{69, 72, 57, 0}}, {{67, 71, 55, 0}}, {{64, 67, 52, 0}}, {{62, 66, 50, 0}},
+    {{60, 64, 48, 0}}, {{62, 66, 50, 0}}, {{64, 67, 52, 0}}, {{67, 71, 55, 0}},
+    {{72, 76, 60, 0}}, {{71, 74, 59, 0}}, {{69, 72, 57, 0}}, {{67, 71, 55, 0}}
+};
+
+/* MIDIノート番号から物理再生用デルタフェーズ値への高速変換関数 */
+uint32_t get_delta(uint8_t note) {
+    if (note == 0) return 0;
+    // C4(60)～B4(71)の基準デルタテーブル (22.05kHzサンプリング用)
+    const uint32_t lut12[] = {
+        50960322, 53990669, 57201124, 60602511, 64206124, 68024220, 
+        72069273, 76354816, 80894982, 85705353, 90801648, 96200984
+    };
+    int8_t octave = (note / 12) - 5;
+    uint32_t d = lut12[note % 12];
+    if (octave > 0) d <<= octave;
+    else if (octave < 0) d >>= (-octave);
+    return d;
+}
+
+/* TIM1 初期化 (オーディオPWM用: PC4=Left, PD3=Right) */
+void TIM1_Audio_Init(void) {
+    RCC->PB2PCENR |= RCC_PB2Periph_GPIOC | RCC_PB2Periph_GPIOD | RCC_PB2Periph_TIM1;
+
+    GPIOC->CFGLR &= ~(0xF << (4 * 4));
+    GPIOC->CFGLR |= (0xB << (4 * 4));
+    GPIOD->CFGLR &= ~(0xF << (3 * 4));
+    GPIOD->CFGLR |= (0xB << (3 * 4));
+
+    TIM1->PSC = 0;
+    TIM1->ATRLR = 255; 
+
+    TIM1->CHCTLR1 |= TIM_OC1M_2 | TIM_OC1M_1 | TIM_OC1PE; 
+    TIM1->CHCTLR2 |= TIM_OC4M_2 | TIM_OC4M_1 | TIM_OC4PE; 
+
+    TIM1->CCER |= TIM_CC1E | TIM_CC4E;
+    TIM1->BDTR |= TIM_AOE | TIM_MOE;
+    TIM1->CTLR1 |= TIM_CEN;
+}
+
+/* TIM2 初期化 (定期サンプリング割り込み用: 22.05kHz) */
+void TIM2_Sampler_Init(void) {
+    RCC->PB1PCENR |= RCC_PB1Periph_TIM2;
+    TIM2->PSC = 0;
+    TIM2->ATRLR = (SystemCoreClock / 22050) - 1;
+    TIM2->DMAINTENR |= TIM_IT_Update;
+    TIM2->CTLR1 |= TIM_CEN;
+    NVIC_EnableIRQ(TIM2_IRQn);
+}
+
+/* 操作スイッチ初期化 (PD4=PLAY, PD5=STOP, PD6=NEXT, PD2=PREV / 内部プルアップ有効) */
+void Switch_Init(void) {
+    RCC->PB2PCENR |= RCC_PB2Periph_GPIOD;
+    GPIOD->CFGLR &= ~((0xF << (2 * 4)) | (0xF << (4 * 4)) | (0xF << (5 * 4)) | (0xF << (6 * 4)));
+    GPIOD->CFGLR |= ((0x8 << (2 * 4)) | (0x8 << (4 * 4)) | (0x8 << (5 * 4)) | (0x8 << (6 * 4)));
+    GPIOD->BSHR = GPIO_BSHR_BS2 | GPIO_BSHR_BS4 | GPIO_BSHR_BS5 | GPIO_BSHR_BS6;
+}
+
+/* オーディオ合成割り込みハンドラ (22.05kHz) */
+void TIM2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM2_IRQHandler(void) {
+    if (TIM2->INTFR & TIM_IT_Update) {
+        TIM2->INTFR = (uint16_t)~TIM_IT_Update;
+
+        int32_t mix_l = 0;
+        int32_t mix_r = 0;
+
+        for (int i = 0; i < 4; i++) {
+            channels[i].phase += channels[i].delta;
+            int8_t sample = (channels[i].phase & 0x80000000) ? 127 : -128;
+            
+            int32_t v = (sample * channels[i].volume) >> 8;
+            mix_l += (v * channels[i].pan_l) >> 7;
+            mix_r += (v * channels[i].pan_r) >> 7;
+        }
+
+        mix_l = (mix_l / 4) + 128;
+        mix_r = (mix_r / 4) + 128;
+
+        if (mix_l > 255) mix_l = 255; if (mix_l < 0) mix_l = 0;
+        if (mix_r > 255) mix_r = 255; if (mix_r < 0) mix_r = 0;
+
+        TIM1->CH4CVR = (uint16_t)mix_l; 
+        TIM1->CH1CVR = (uint16_t)mix_r; 
+
+        sample_ticks++;
+    }
+}
+
+/* 曲の特性に合わせた音色・定位パラメーターの動的更新 */
+void update_audio_parameters(uint8_t song, uint8_t step) {
+    const Step_t* songs[4] = {song_techno, song_bass, song_fantasy, song_stereo};
+    const Step_t* p_song = songs[song];
+    
+    for (int i = 0; i < 4; i++) {
+        uint8_t note = p_song[step].note[i];
+        if (note > 0) {
+            channels[i].delta = get_delta(note);
+            
+            if (song == 0) { /* 1. テクノ系 */
+                channels[i].volume = (i == 2) ? 160 : 100;
+                if (i == 0) { channels[i].pan_l = 96; channels[i].pan_r = 32; }
+                else if (i == 1) { channels[i].pan_l = 32; channels[i].pan_r = 96; }
+                else { channels[i].pan_l = 64; channels[i].pan_r = 64; }
+            }
+            else if (song == 1) { /* 2. 低音重視 */
+                if (i == 2) { channels[i].volume = 255; channels[i].pan_l = 64; channels[i].pan_r = 64; }
+                else { channels[i].volume = 50; channels[i].pan_l = 40; channels[i].pan_r = 40; }
+            }
+            else if (song == 2) { /* 3. 幻想的 (発音トリガー) */
+                channels[i].volume = 140;
+                channels[i].pan_l = (i == 0) ? 110 : 18;
+                channels[i].pan_r = (i == 0) ? 18 : 110;
+            }
+            else if (song == 3) { /* 4. ステレオ */
+                channels[i].volume = 120;
+                if (step % 2 == 0) {
+                    channels[i].pan_l = (i == 0) ? 127 : 0;
+                    channels[i].pan_r = (i == 0) ? 0 : 127;
+                } else {
+                    channels[i].pan_l = (i == 0) ? 0 : 127;
+                    channels[i].pan_r = (i == 0) ? 127 : 0;
+                }
+            }
+        } else {
+            if (song != 2) { /* 幻想的以外は即消音 */
+                channels[i].delta = 0;
+                channels[i].volume = 0;
+            }
+        }
+    }
+    
+    /* テクノ用の擬似ノイズパーカッション（ch3を使用） */
+    if (song == 0 && (step == 4 || step == 12)) {
+        channels[3].delta = 8888888; 
+        channels[3].volume = 160;
+        channels[3].pan_l = 64; channels[3].pan_r = 64;
+    }
+}
+
+int main(void) {
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+    SystemCoreClockUpdate();
+    Delay_Init();
+
+    TIM1_Audio_Init();
+    TIM2_Sampler_Init();
+    Switch_Init();
+
+    uint8_t current_song = 0;
+    uint8_t is_playing = 0;
+    uint8_t current_step = 0;
+    uint32_t step_timer = 0;
+    uint32_t tempo_wait = 150;
+
+    while (1) {
+        /* スイッチ状態の読み取り (ローアクティブ検出) */
+        uint8_t btn_play  = !(GPIOD->INDR & GPIO_INDR_IDR4);
+        uint8_t btn_stop  = !(GPIOD->INDR & GPIO_INDR_IDR5);
+        uint8_t btn_next  = !(GPIOD->INDR & GPIO_INDR_IDR6);
+        uint8_t btn_prev  = !(GPIOD->INDR & GPIO_INDR_IDR2);
+
+        if (btn_play) {
+            is_playing = 1;
+            current_step = 0;
+            step_timer = 0;
+            Delay_Ms(200); 
+        }
+        if (btn_stop) {
+            is_playing = 0;
+            for (int i = 0; i < 4; i++) { channels[i].volume = 0; channels[i].delta = 0; }
+            Delay_Ms(200);
+        }
+        if (btn_next) {
+            current_song = (current_song + 1) % 4;
+            current_step = 0;
+            step_timer = 0;
+            if (!is_playing) { for (int i = 0; i < 4; i++) { channels[i].volume = 0; channels[i].delta = 0; } }
+            Delay_Ms(200);
+        }
+        if (btn_prev) {
+            current_song = (current_song == 0) ? 3 : current_song - 1;
+            current_step = 0;
+            step_timer = 0;
+            if (!is_playing) { for (int i = 0; i < 4; i++) { channels[i].volume = 0; channels[i].delta = 0; } }
+            Delay_Ms(200);
+        }
+
+        if (is_playing) {
+            /* 曲ごとの基本テンポウエイト設定 */
+            if (current_song == 0)      tempo_wait = 100;
+            else if (current_song == 1) tempo_wait = 160;
+            else if (current_song == 2) tempo_wait = 260;
+            else if (current_song == 3) tempo_wait = 120;
+
+            if (step_timer == 0) {
+                update_audio_parameters(current_song, current_step);
+                current_step = (current_step + 1) % 16;
+            }
+
+            Delay_Ms(10);
+            step_timer += 10;
+            
+            if (step_timer >= tempo_wait) {
+                step_timer = 0;
+            }
+
+            /* 3. 幻想的：エコー用の音量自動減衰エンベロープ処理 */
+            if (current_song == 2) {
+                for (int i = 0; i < 4; i++) {
+                    if (channels[i].volume > 4) {
+                        channels[i].volume -= 3;
+                    } else {
+                        channels[i].volume = 0;
+                        channels[i].delta = 0;
+                    }
+                }
+            }
+        } else {
+            Delay_Ms(10);
+        }
+    }
+}
