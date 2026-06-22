@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>サレンキー型LPF シミュレーター</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a1a; color: #e0e0e0; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: #262626; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        h2 { text-align: center; color: #fff; font-weight: normal; margin-bottom: 20px;}
+        .results { display: flex; justify-content: space-around; background: #111; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 1.2rem; }
+        .results span { color: #4CAF50; font-weight: bold; }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .control-group { display: flex; flex-direction: column; background: #333; padding: 15px; border-radius: 8px; }
+        .control-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        input[type="number"] { width: 70px; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; padding: 5px; text-align: right; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>サレンキー型ローパスフィルター シミュレーター</h2>
+    
+    <canvas id="bodeChart" height="120"></canvas>
+
+    <div class="results">
+        <div>カットオフ周波数 (fc): <span id="fc-val">--</span> Hz</div>
+        <div>Q値: <span id="q-val">--</span></div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <div class="control-header">
+                <label>R1 (kΩ)</label>
+                <input type="number" id="r1-num" value="1" step="0.1" min="0.1">
+            </div>
+            <input type="range" id="r1" min="0.1" max="50" step="0.1" value="1">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <label>R2 (kΩ)</label>
+                <input type="number" id="r2-num" value="10" step="0.1" min="0.1">
+            </div>
+            <input type="range" id="r2" min="0.1" max="50" step="0.1" value="10">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <label>C1 (nF)</label>
+                <input type="number" id="c1-num" value="1.1" step="0.1" min="0.1">
+            </div>
+            <input type="range" id="c1" min="0.1" max="20" step="0.1" value="1.1">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <label>C2 (nF)</label>
+                <input type="number" id="c2-num" value="0.6" step="0.1" min="0.1">
+            </div>
+            <input type="range" id="c2" min="0.1" max="20" step="0.1" value="0.6">
+        </div>
+    </div>
+</div>
+
+<script>
+    let chart;
+    const freqs = [];
+    // 対数スケールで100Hzから200kHzまでの周波数ポイントを生成
+    for (let f = 100; f <= 200000; f *= 1.05) freqs.push(f);
+
+    function calculate() {
+        const R1 = parseFloat(document.getElementById('r1').value) * 1000;
+        const R2 = parseFloat(document.getElementById('r2').value) * 1000;
+        const C1 = parseFloat(document.getElementById('c1').value) * 1e-9;
+        const C2 = parseFloat(document.getElementById('c2').value) * 1e-9;
+
+        // fc と Q の計算
+        const fc = 1 / (2 * Math.PI * Math.sqrt(R1 * R2 * C1 * C2));
+        const Q = Math.sqrt(R1 * R2 * C1 * C2) / (C2 * (R1 + R2));
+
+        document.getElementById('fc-val').innerText = Math.round(fc).toLocaleString();
+        document.getElementById('q-val').innerText = Q.toFixed(3);
+
+        // ゲイン特性の計算
+        const gains = freqs.map(f => {
+            const ratio = f / fc;
+            const mag = 1 / Math.sqrt(Math.pow(1 - Math.pow(ratio, 2), 2) + Math.pow(ratio / Q, 2));
+            return 20 * Math.log10(mag);
+        });
+
+        updateChart(gains, fc);
+    }
+
+    function updateChart(gains, fc) {
+        if (chart) chart.destroy();
+        const ctx = document.getElementById('bodeChart').getContext('2d');
+        
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: freqs,
+                datasets: [{
+                    label: '利得 (dB)',
+                    data: gains,
+                    borderColor: '#64b5f6',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: {
+                        type: 'logarithmic',
+                        title: { display: true, text: '周波数 (Hz)', color: '#ccc' },
+                        grid: { color: '#444' },
+                        ticks: { color: '#ccc', callback: function(value) {
+                            if (value === 100 || value === 1000 || value === 10000 || value === 100000) {
+                                return value >= 1000 ? (value/1000) + 'k' : value;
+                            }
+                            return null;
+                        }}
+                    },
+                    y: {
+                        min: -60,
+                        max: 20,
+                        title: { display: true, text: '利得 (dB)', color: '#ccc' },
+                        grid: { color: '#444' },
+                        ticks: { color: '#ccc' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    annotation: {
+                        // Chart.js-plugin-annotationがあれば縦線を引けますが、
+                        // 依存を減らすため今回はシンプルに標準機能のみで実装しています。
+                    }
+                }
+            }
+        });
+    }
+
+    // スライダーと数値入力の同期設定
+    ['r1', 'r2', 'c1', 'c2'].forEach(id => {
+        const slider = document.getElementById(id);
+        const num = document.getElementById(id + '-num');
+        slider.addEventListener('input', () => { num.value = slider.value; calculate(); });
+        num.addEventListener('input', () => { slider.value = num.value; calculate(); });
+    });
+
+    // 初期描画
+    calculate();
+</script>
+</body>
+</html>
