@@ -1,0 +1,467 @@
+/*
+ * UIAPduino_VFO.ino  —  UIAPduino (CH32V003) I/Q VFO風UI 【完全自作・極限軽量版】
+ * バージョン: v0.53
+ * * 変更履歴:
+ * v0.53 (2026/06/24)
+ * - TIM1完全ハードウェアリセット: 再ON時に RCC->APB2PRSTR を操作してTIM1を物理的に完全初期化。以前の設定ゴミによるフリーズを根絶。
+ * - 位相リセットの追加: 出力再開時に dds_phase = 0 とし、常に波形の先頭からスタートするよう修正。
+ * - OFF監視の最適化復元: 危険なレジスタ直読みをやめ、v0.50の「256回に1回のdigitalRead()間引き監視」に復帰。
+ * v0.52 (2026/06/24)
+ * - レジスタ直読みに回帰: 8番ピンの実際のハードウェアマッピング（PC6）を特定し、直接監視するよう修正。
+ * - UIFフラグクリアの復元: 正常に動作していた v0.47 の `TIM1->INTFR = 0;` に復元。
+ * v0.51 (2026/06/24)
+ * - 再起動フリーズの解決(失敗): TIM1->INTFRのクリアを修正。
+ * v0.50 (2026/06/24)
+ * - 再起動バグとジッタの完全解決: digitalRead()を256回に1回に間引く。タイマー初期化。二重スケーリング修正。
+ * v0.49 (2026/06/24)
+ * - 再起動バグ修正: setup()内のOFFボタン(8番ピン)の外部割り込み設定を完全に削除。
+ * v0.48 (2026/06/24)
+ * - 緊急停止判定の修正: 完全同期ループ内のOFFスイッチ監視を確実な digitalRead(PIN_SW_OFF) へ変更。
+ * v0.47 (2026/06/24)
+ * - ジッタ根絶の最終回答: 「タイマー完全同期ポーリング」を実装。DDSループをRAM実行。
+ * v0.41 (2026/06/23)
+ * - サイン波出力のPWM化修正: モード切り替え時の TIM1 チャンネル設定を修正。
+ * v0.39 (2026/06/23)
+ * - 究極のジッタ対策(引きこもりループ): DMAと割り込みを完全撤廃。
+ * v0.36 (2026/06/21)
+ * - UI表示の最適化: STEP表示と状態表示の座標微調整。反転文字表示実装。
+ * v0.35 (2026/06/21)
+ * - UIレイアウトバグ修正: SINE/PLSEモード表示文字列とSTEP表示の重なりを解消。
+ * v0.34 (2026/06/21)
+ * - フォントバグ修正: tinyFontにアルファベットの「I」を追加。
+ * v0.33 (2026/06/21)
+ * - EXTI外部割り込みによる緊急停止実装: OFFスイッチを最優先の外部割り込みへ登録。
+ * v0.32 (2026/06/21)
+ * - 正弦波のバースト発振解消: タイマー周期自体を直接100kHzに再設計。
+ * v0.31 (2026/06/21)
+ * - コンパイルエラー修正: TIM1のレジスタ名を RPTCR へ修正。
+ * v0.30 (2026/06/21)
+ * - 音声帯域特化とCPU負荷軽減: サイン波の上限を10kHzへ引き下げ。
+ * v0.29 (2026/06/21)
+ * - A案適用: タイマー上限を31(5bit)から255(8bit)へ復元。
+ * v0.20 (2026/06/20)
+ * - tone()を廃止し、PWMサイン波出力へ換装。
+ * v0.01 (2026/06/20)
+ * - UIAPduino (CH32V003) 用に新規移植。
+ */
+
+#include <Arduino.h>
+
+// ----------------------------------------------------------------------------
+// ピン定義 (CH32V003 / UIAPduino準拠)
+// ----------------------------------------------------------------------------
+static const uint8_t PIN_ENC_A   = 2;  // PC0
+static const uint8_t PIN_ENC_B   = 3;  // PC1
+static const uint8_t PIN_STEP_SW = 4;  // PC2
+static const uint8_t PIN_RF_OUT  = 5;  // PC3 (TIM1_CH3)
+static const uint8_t PIN_SW_ON   = 7;  // PC5
+static const uint8_t PIN_SW_OFF  = 8;  // PC6 (GPIOC Bit 6)
+static const uint8_t PIN_LED     = 9;  // PC7
+
+// ソフトウェアI2C用ピン (OLED通信用)
+static const uint8_t SOFT_SDA_PIN = A6;
+static const uint8_t SOFT_SCL_PIN = A5;
+#define OLED_ADDR 0x3C
+
+// 周波数パラメータ
+static const uint32_t FREQ_MIN  = 10UL;
+static const uint32_t FREQ_INIT = 10000UL;
+static const uint32_t STEP_A = 10UL;
+static const uint32_t STEP_B = 100UL;
+static const uint32_t STEP_C = 1000UL;
+
+// キャリブレーション係数
+static const float CAL_FACTOR = 0.9903245f;
+
+uint32_t g_freq = FREQ_INIT;
+uint32_t g_step = STEP_B;
+volatile bool g_rf_enabled = false;
+uint8_t g_mode = 0; // 0: SINE, 1: PLSE
+
+// ============================================================================
+// ロータリーエンコーダ処理
+// ============================================================================
+static volatile uint8_t enc_prevState = 0;
+static volatile int8_t  enc_subcount  = 0;
+static volatile long    enc_delta     = 0;
+
+void enc_isr() {
+  static const int8_t QEM[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+  uint8_t s = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+  uint8_t idx = ((enc_prevState << 2) | s) & 0x0F;
+  enc_prevState = s;
+  enc_subcount += QEM[idx];
+  if (enc_subcount >= 4) { enc_subcount = 0; enc_delta++; }
+  else if (enc_subcount <= -4) { enc_subcount = 0; enc_delta--; }
+}
+
+void enc_begin() {
+  pinMode(PIN_ENC_A, INPUT_PULLUP);
+  pinMode(PIN_ENC_B, INPUT_PULLUP);
+  enc_prevState = (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B);
+  attachInterrupt(PIN_ENC_A, GPIO_Mode_IPU, enc_isr, EXTI_Mode_Interrupt, EXTI_Trigger_Rising_Falling);
+  attachInterrupt(PIN_ENC_B, GPIO_Mode_IPU, enc_isr, EXTI_Mode_Interrupt, EXTI_Trigger_Rising_Falling);
+}
+
+long enc_getSteps() {
+  noInterrupts();
+  long d = enc_delta;
+  enc_delta = 0;
+  interrupts();
+  return d;
+}
+
+// ============================================================================
+// 超軽量ソフトウェア I2C 通信処理
+// ============================================================================
+void soft_i2c_delay() { for(volatile int i=0; i<4; i++) __asm__("nop"); }
+void soft_i2c_start() {
+  digitalWrite(SOFT_SDA_PIN, HIGH); soft_i2c_delay();
+  digitalWrite(SOFT_SCL_PIN, HIGH); soft_i2c_delay();
+  digitalWrite(SOFT_SDA_PIN, LOW);  soft_i2c_delay();
+  digitalWrite(SOFT_SCL_PIN, LOW);  soft_i2c_delay();
+}
+void soft_i2c_stop() {
+  digitalWrite(SOFT_SDA_PIN, LOW);  soft_i2c_delay();
+  digitalWrite(SOFT_SCL_PIN, HIGH); soft_i2c_delay();
+  digitalWrite(SOFT_SDA_PIN, HIGH); soft_i2c_delay();
+}
+void soft_i2c_write(uint8_t data) {
+  for(int i=0; i<8; i++){
+    digitalWrite(SOFT_SDA_PIN, (data & 0x80) ? HIGH : LOW);
+    soft_i2c_delay(); digitalWrite(SOFT_SCL_PIN, HIGH); soft_i2c_delay();
+    digitalWrite(SOFT_SCL_PIN, LOW); soft_i2c_delay();
+    data <<= 1;
+  }
+  digitalWrite(SOFT_SDA_PIN, HIGH); soft_i2c_delay();
+  digitalWrite(SOFT_SCL_PIN, HIGH); soft_i2c_delay();
+  digitalWrite(SOFT_SCL_PIN, LOW);  soft_i2c_delay();
+}
+
+// ============================================================================
+// 超軽量 OLED ドライバ ＆ フォント
+// ============================================================================
+uint8_t page_buf[128];
+uint8_t current_page = 0;
+
+static const uint8_t tinyFont[][5] = {
+  {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 0
+  {0x00, 0x42, 0x7F, 0x40, 0x00}, // 1
+  {0x42, 0x61, 0x51, 0x49, 0x46}, // 2
+  {0x21, 0x41, 0x45, 0x4B, 0x31}, // 3
+  {0x18, 0x14, 0x12, 0x7F, 0x10}, // 4
+  {0x27, 0x45, 0x45, 0x45, 0x39}, // 5
+  {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 6
+  {0x01, 0x71, 0x09, 0x05, 0x03}, // 7
+  {0x36, 0x49, 0x49, 0x49, 0x36}, // 8
+  {0x06, 0x49, 0x49, 0x29, 0x1E}, // 9
+  {0x00, 0x60, 0x60, 0x00, 0x00}, // 10: .
+  {0x00, 0x00, 0x00, 0x00, 0x00}, // 11: (space)
+  {0x26, 0x49, 0x49, 0x49, 0x32}, // 12: S
+  {0x01, 0x01, 0x7F, 0x01, 0x01}, // 13: T
+  {0x7F, 0x49, 0x49, 0x49, 0x41}, // 14: E
+  {0x7F, 0x09, 0x09, 0x09, 0x06}, // 15: P
+  {0x00, 0x36, 0x36, 0x00, 0x00}, // 16: :
+  {0x7F, 0x08, 0x08, 0x08, 0x7F}, // 17: H
+  {0x44, 0x64, 0x54, 0x4C, 0x44}, // 18: z
+  {0x7F, 0x18, 0x24, 0x42, 0x00}, // 19: k
+  {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 20: O
+  {0x7F, 0x04, 0x08, 0x10, 0x7F}, // 21: N
+  {0x7F, 0x09, 0x09, 0x09, 0x01}, // 22: F
+  {0x00, 0x7F, 0x41, 0x41, 0x00}, // 23: [
+  {0x00, 0x41, 0x41, 0x7F, 0x00}, // 24: ]
+  {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 25: A
+  {0x7F, 0x40, 0x40, 0x40, 0x40}, // 26: L
+  {0x7F, 0x41, 0x41, 0x22, 0x1C}, // 27: D
+  {0x00, 0x42, 0x7F, 0x42, 0x00}  // 28: I
+};
+
+int getCharIndex(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c == '.') return 10; if (c == 'S') return 12; if (c == 'T') return 13;
+  if (c == 'E') return 14; if (c == 'P') return 15; if (c == ':') return 16;
+  if (c == 'H') return 17; if (c == 'z') return 18; if (c == 'k') return 19;
+  if (c == 'O') return 20; if (c == 'N') return 21; if (c == 'F') return 22;
+  if (c == '[') return 23; if (c == ']') return 24; if (c == 'A') return 25;
+  if (c == 'L') return 26; if (c == 'D') return 27; if (c == 'I') return 28;
+  return 11;
+}
+
+void oled_cmd(uint8_t cmd) {
+  soft_i2c_start(); soft_i2c_write(OLED_ADDR << 1);
+  soft_i2c_write(0x00); soft_i2c_write(cmd); soft_i2c_stop();
+}
+
+void oled_init() {
+  static const uint8_t init_cmds[] = {
+    0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D, 0x14,
+    0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1,
+    0xDB, 0x40, 0xA4, 0xA6, 0xAF
+  };
+  for (uint8_t i = 0; i < sizeof(init_cmds); i++) oled_cmd(init_cmds[i]);
+}
+
+void oled_send_page() {
+  oled_cmd(0xB0 | current_page); oled_cmd(0x00); oled_cmd(0x10);
+  soft_i2c_start(); soft_i2c_write(OLED_ADDR << 1);
+  soft_i2c_write(0x40);
+  for (int i = 0; i < 128; i++) soft_i2c_write(page_buf[i]);
+  soft_i2c_stop();
+}
+
+void drawPixel(int x, int y) {
+  if (x < 0 || x > 127 || y < 0 || y > 63) return;
+  if (y / 8 == current_page) page_buf[x] |= (1 << (y % 8));
+}
+
+void drawVLineFromTop(int x, int len) { for (int y = 0; y <= len; y++) drawPixel(x, y); }
+
+void drawChar(int x, int y, char c) {
+  int idx = getCharIndex(c);
+  for (int i = 0; i < 5; i++) {
+    uint8_t col = tinyFont[idx][i];
+    for (int j = 0; j < 8; j++) if (col & (1 << j)) drawPixel(x + i, y + j);
+  }
+}
+
+void drawCharInv(int x, int y, char c) {
+  int idx = getCharIndex(c);
+  for (int i = 0; i < 6; i++) {
+    uint8_t col = (i < 5) ? tinyFont[idx][i] : 0x00;
+    for (int j = 0; j < 8; j++) if (!(col & (1 << j))) drawPixel(x + i, y + j);
+  }
+}
+
+void drawStr(int x, int y, const char* str) { while (*str) { drawChar(x, y, *str++); x += 6; } }
+void drawStrInv(int x, int y, const char* str) { while (*str) { drawCharInv(x, y, *str++); x += 6; } }
+
+void drawChar2x(int x, int y, char c) {
+  int idx = getCharIndex(c);
+  for (int i = 0; i < 5; i++) {
+    uint8_t col = tinyFont[idx][i];
+    for (int j = 0; j < 8; j++) {
+      if (col & (1 << j)) {
+        drawPixel(x + i*2, y + j*2); drawPixel(x + i*2 + 1, y + j*2);
+        drawPixel(x + i*2, y + j*2 + 1); drawPixel(x + i*2 + 1, y + j*2 + 1);
+      }
+    }
+  }
+}
+void drawStr2x(int x, int y, const char* str) { while (*str) { drawChar2x(x, y, *str++); x += 12; } }
+
+// ============================================================================
+// UI 描画処理
+// ============================================================================
+void drawLinearTicks() {
+  const int CX = 64;
+  long centerFreq = (long)g_freq;
+  for (long f = ((centerFreq - 160) / 10) * 10; f <= centerFreq + 160; f += 10) {
+    if (f < 0) continue;
+    int x = CX + (int)((f - centerFreq) * 4 / 10);
+    if (x < 0 || x > 127) continue;
+    bool major = (f % 100) == 0;
+    int len = major ? 12 : ((f % 50 == 0) ? 8 : 4);
+    drawVLineFromTop(x, len);
+    if (major) {
+      char lb[8];
+      uint32_t khz = f / 1000, rem = (f / 10) % 100;
+      int idx = 0;
+      if (khz == 0) lb[idx++] = '0';
+      else { if (khz >= 10) lb[idx++] = '0' + (khz / 10); lb[idx++] = '0' + (khz % 10); }
+      lb[idx++] = '.'; lb[idx++] = '0' + (rem / 10); lb[idx++] = '0'; lb[idx] = '\0';
+      drawStr(x - (idx * 3), len + 2, lb);
+    }
+  }
+}
+
+void drawDisplayPage() {
+  for (int i = 0; i < 128; i++) page_buf[i] = 0;
+  drawLinearTicks();
+  drawVLineFromTop(64, 11);
+  drawPixel(63, 10); drawPixel(65, 10); drawPixel(62, 9); drawPixel(66, 9);
+  char fbuf[10];
+  uint32_t khz = g_freq / 1000, hz = g_freq % 1000;
+  fbuf[9] = '\0'; fbuf[8] = '0' + (hz % 10); fbuf[7] = '0' + ((hz / 10) % 10);
+  fbuf[6] = '0' + ((hz / 100) % 10); fbuf[5] = '.';
+  int idx = 4;
+  if (khz == 0) fbuf[idx--] = '0';
+  else { while (khz > 0 && idx >= 0) { fbuf[idx--] = '0' + (khz % 10); khz /= 10; } }
+  int fw = (8 - idx) * 12;
+  drawStr2x(64 - fw/2 - 6, 36, &fbuf[idx + 1]); drawStr(64 + fw/2 - 2, 44, "kHz");
+  drawStr(0, 54, g_mode == 0 ? "SINE  " : "PLSE  ");
+  if (g_step == 1000) drawStr(30, 54, "STEP:1kHz ");
+  else if (g_step == 100) drawStr(30, 54, "STEP:100Hz");
+  else drawStr(30, 54, "STEP:10Hz ");
+  if (g_rf_enabled) drawStrInv(92, 54, "[ON]"); else drawStr(92, 54, "[OFF]");
+}
+
+void refreshDisplay() {
+  for (current_page = 0; current_page < 8; current_page++) {
+    drawDisplayPage(); oled_send_page();
+  }
+}
+
+// ============================================================================
+// DDS / ハードウェア制御 (ジッタ根絶・完全同期・RAM実行版)
+// ============================================================================
+uint8_t sine256[256] = {
+  128, 131, 134, 137, 140, 143, 146, 149, 152, 155, 158, 162, 165, 167, 170, 173,
+  176, 179, 182, 185, 188, 190, 193, 196, 198, 201, 203, 206, 208, 211, 213, 215,
+  218, 220, 222, 224, 226, 228, 230, 232, 234, 235, 237, 238, 240, 241, 243, 244,
+  245, 246, 248, 249, 250, 250, 251, 252, 253, 253, 254, 254, 254, 255, 255, 255,
+  255, 255, 255, 255, 254, 254, 254, 253, 253, 252, 251, 250, 250, 249, 248, 246,
+  245, 244, 243, 241, 240, 238, 237, 235, 234, 232, 230, 228, 226, 224, 222, 220,
+  218, 215, 213, 211, 208, 206, 203, 201, 198, 196, 193, 190, 188, 185, 182, 179,
+  176, 173, 170, 167, 165, 162, 158, 155, 152, 149, 146, 143, 140, 137, 134, 131,
+  128, 124, 121, 118, 115, 112, 109, 106, 103, 100,  97,  93,  90,  88,  85,  82,
+   79,  76,  73,  70,  67,  65,  62,  59,  57,  54,  52,  49,  47,  44,  42,  40,
+   37,  35,  33,  31,  29,  27,  25,  23,  21,  20,  18,  17,  15,  14,  12,  11,
+   10,   9,   7,   6,   5,   5,   4,   3,   2,   2,   1,   1,   1,   0,   0,   0,
+    0,   0,   0,   0,   1,   1,   1,   2,   2,   3,   4,   5,   5,   6,   7,   9,
+   10,  11,  12,  14,  15,  17,  18,  20,  21,  23,  25,  27,  29,  31,  33,  35,
+   37,  40,  42,  44,  47,  49,  52,  54,  57,  59,  62,  65,  67,  70,  73,  76,
+   79,  82,  85,  88,  90,  93,  97, 100, 103, 106, 109, 112, 115, 118, 121, 124
+};
+
+volatile uint32_t dds_phase = 0;
+volatile uint32_t dds_tuning_word = 0;
+
+void off_isr() {
+  TIM1->CTLR1 &= ~1;
+  GPIOC->CFGLR = (GPIOC->CFGLR & ~(0xF << (3 * 4))) | (0x3 << (3 * 4)); 
+  GPIOC->BSHR = (1 << (3 + 16));
+  g_rf_enabled = false;
+  digitalWrite(PIN_LED, LOW);
+}
+
+void setFrequency(uint32_t freqHz) {
+  if (!g_rf_enabled) { off_isr(); return; }
+  uint32_t target_freq = (uint32_t)(freqHz * CAL_FACTOR);
+  
+  TIM1->CTLR1 &= ~1; // タイマー停止
+  
+  // タイマーのハードウェアレベルでの完全リセット (RCC_APB2PRSTR Bit 11 = TIM1RST)
+  RCC->APB2PRSTR |= (1 << 11);
+  RCC->APB2PRSTR &= ~(1 << 11);
+  
+  // 位相リセット
+  dds_phase = 0;
+  
+  if (g_mode == 0) {
+    // 【サイン波】サンプリングレートを200kHzに固定 (48MHz / 240)
+    TIM1->PSC = 0; TIM1->ATRLR = 239; TIM1->RPTCR = 0;
+    TIM1->CHCTLR2 = (TIM1->CHCTLR2 & ~0x00FF) | 0x68;
+    TIM1->CCER |= (1 << 8); TIM1->BDTR |= (1 << 15);
+    dds_tuning_word = (uint32_t)(target_freq * 21474.83648f);
+  } else {
+    // 【矩形波】
+    uint32_t div = 48000000UL / target_freq;
+    TIM1->PSC = 0; TIM1->ATRLR = div - 1; TIM1->CH3CVR = div / 2;
+    TIM1->CHCTLR2 = (TIM1->CHCTLR2 & ~0x00FF) | 0x68;
+    TIM1->CCER |= (1 << 8); TIM1->BDTR |= (1 << 15);
+  }
+  
+  GPIOC->CFGLR = (GPIOC->CFGLR & ~(0xF << (3 * 4))) | (0xB << (3 * 4));
+  
+  TIM1->SWEVGR = 1; 
+  TIM1->INTFR = 0; 
+  
+  TIM1->CTLR1 |= 1; // 再起動
+  digitalWrite(PIN_LED, HIGH);
+}
+
+// DDSループをRAM上で実行し、Flashアクセスの揺らぎを排除
+void __attribute__((section(".highcode"))) run_dds_sine() {
+  noInterrupts(); // SysTick割り込み等によるジッタを防止
+  
+  uint8_t check_counter = 0;
+  
+  while (g_rf_enabled) {
+    // 1. タイマーの更新フラグ(UIF)を待機。これでサンプリング周期に完全同期。
+    while (!(TIM1->INTFR & 0x01));
+    TIM1->INTFR = 0; 
+
+    // 2. 位相更新と波形出力
+    dds_phase += dds_tuning_word;
+    TIM1->CH3CVR = sine256[dds_phase >> 24];
+
+    // 3. 緊急停止監視 (256回に1回のdigitalRead間引き監視に復元)
+    check_counter++;
+    if (check_counter == 0) {
+      if (digitalRead(PIN_SW_OFF) == LOW) { 
+        off_isr(); 
+        break; 
+      }
+      noInterrupts(); // digitalRead内で割り込みが許可された場合のガード
+    }
+  }
+  interrupts();
+}
+
+void setup() {
+  // 振幅スケーリングの事前処理
+  for(int i = 0; i < 256; i++) sine256[i] = (sine256[i] * 240) >> 8;
+
+  pinMode(PIN_STEP_SW, INPUT_PULLUP);
+  pinMode(PIN_SW_ON, INPUT_PULLUP);
+  pinMode(PIN_SW_OFF, INPUT_PULLUP);
+  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_RF_OUT, OUTPUT);
+  digitalWrite(PIN_RF_OUT, LOW);
+
+  RCC->AHBPCENR  |= (1 << 0); 
+  RCC->APB2PCENR |= (1 << 11) | (1 << 4) | (1 << 0); 
+
+  pinMode(SOFT_SDA_PIN, OUTPUT_OD); pinMode(SOFT_SCL_PIN, OUTPUT_OD);
+  digitalWrite(SOFT_SDA_PIN, HIGH); digitalWrite(SOFT_SCL_PIN, HIGH);
+
+  oled_init(); enc_begin();
+  refreshDisplay();
+}
+
+void loop() {
+  static bool last_rf_enabled = false;
+  if (g_rf_enabled != last_rf_enabled) { last_rf_enabled = g_rf_enabled; refreshDisplay(); }
+
+  if (g_rf_enabled) {
+    if (g_mode == 0) {
+      run_dds_sine(); // RAM実行・完全同期ループへ
+    } else {
+      while (g_rf_enabled) { 
+        if (digitalRead(PIN_SW_OFF) == LOW) { off_isr(); break; } 
+      }
+    }
+  } else {
+    if (digitalRead(PIN_SW_ON) == LOW) { g_rf_enabled = true; setFrequency(g_freq); return; }
+    
+    bool changed = false;
+    long d = enc_getSteps();
+    if (d != 0) {
+      int32_t nf = (int32_t)g_freq + d * (int32_t)g_step;
+      int32_t f_max = (g_mode == 0) ? 10000L : 50000L;
+      if (nf < (int32_t)FREQ_MIN) nf = FREQ_MIN;
+      if (nf > f_max) nf = f_max;
+      if ((uint32_t)nf != g_freq) { g_freq = (uint32_t)nf; changed = true; }
+    }
+
+    static uint32_t btn_press_time = 0;
+    static bool btn_last_state = HIGH;
+    bool btn_state = digitalRead(PIN_STEP_SW);
+    if (btn_state == LOW && btn_last_state == HIGH) btn_press_time = millis();
+    if (btn_state == HIGH && btn_last_state == LOW) {
+      uint32_t duration = millis() - btn_press_time;
+      if (duration >= 1000) {
+        g_mode = (g_mode == 0) ? 1 : 0;
+        if (g_freq > (g_mode == 0 ? 10000UL : 50000UL)) g_freq = (g_mode == 0 ? 10000UL : 50000UL);
+        changed = true;
+      } else if (duration >= 50) {
+        if (g_step == STEP_A) g_step = STEP_B;
+        else if (g_step == STEP_B) g_step = STEP_C;
+        else g_step = STEP_A;
+        changed = true;
+      }
+    }
+    btn_last_state = btn_state;
+    if (changed) refreshDisplay();
+  }
+}
