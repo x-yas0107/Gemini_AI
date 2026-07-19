@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<!--
+ * ファイル名      : MIDI_S_032.html
+ * バージョン      : 0.32
+ * 日付            : 2026-07-18
+ * 説明            : UIAPduino Piano Roll V0.32 - UIAP Preset Instruments
+ * 変更履歴        :
+ * - V0.30: エンベロープ(ADSR)送信対応。
+ * - V0.31: マイコンV0.29連動(波形対応)。
+ * - V0.32: 128種のGM配列を廃止し、実際のハードウェア仕様に基づいた9種類の色分け専用プリセットへUIを刷新。
+ *          MIDI読込時・過去バージョンプロジェクト読込時にGM配列から専用プリセットへ自動変換する機能を追加。
+-->
+<meta charset="UTF-8">
+<title>UIAPduino Piano Roll V0.32 - UIAP Preset Instruments</title>
+<script src="https://cdn.jsdelivr.net/npm/midi-parser-js@4.0.4/src/main.min.js"></script>
+<style>
+    body { font-family: sans-serif; background-color: #222; color: #eee; margin: 0; padding: 5px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+    .panel { background-color: #333; padding: 5px 10px; border-radius: 4px; margin-bottom: 5px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; position: sticky; top: 0; z-index: 100; border: 1px solid #555; }
+    .panel-group { border-left: 1px solid #555; padding-left: 8px; display: flex; gap: 5px; align-items: center; }
+    .mixer-panel { background-color: #2a2a2a; padding: 5px; border-radius: 4px; margin-bottom: 5px; display: flex; flex-wrap: nowrap; gap: 5px; overflow-x: auto; border: 1px solid #555; }
+    .mixer-ch { background: #333; padding: 4px 6px; border-radius: 4px; border: 1px solid #444; flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 3px; }
+    .mixer-ch-header { font-size: 11px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555; padding-bottom: 2px; }
+    .mixer-ch-header label { font-size: 10px; cursor: pointer; display: flex; align-items: center; gap: 2px; }
+    .ch-ctrls { display: flex; justify-content: space-between; align-items: center; font-size: 9px; }
+    .ch-ctrls input[type="range"] { width: 50px; height: 10px; margin: 0; padding: 0; }
+    
+    select, input, button { padding: 4px 6px; font-size: 11px; border-radius: 3px; border: 1px solid #555; background: #444; color: #fff; margin: 0; }
+    .mixer-ch select { width: 100%; font-size: 10px; padding: 2px; margin-top: 1px; margin-bottom: 1px; }
+    
+    button { cursor: pointer; background: #0066cc; border: none; font-weight: bold; }
+    .btn-stop { background: #cc0000; }
+    .btn-play { background: #009900; }
+    .btn-top { background: #666; }
+    .btn-save { background: #cc6600; }
+    label { font-size: 11px; color: #ccc; display: flex; align-items: center; gap: 4px; }
+    
+    /* 専用プリセット用カラークラス */
+    .inst-preset--1 { background-color: #444 !important; color: #aaa; }
+    .inst-preset-0 { background-color: #550022 !important; color: #ffcccc; }
+    .inst-preset-1 { background-color: #552200 !important; color: #ffddcc; }
+    .inst-preset-2 { background-color: #554400 !important; color: #ffffcc; }
+    .inst-preset-3 { background-color: #004411 !important; color: #ccffcc; }
+    .inst-preset-4 { background-color: #003322 !important; color: #ccffee; }
+    .inst-preset-5 { background-color: #002244 !important; color: #cceeff; }
+    .inst-preset-6 { background-color: #110044 !important; color: #ccccff; }
+    .inst-preset-7 { background-color: #330044 !important; color: #eeccff; }
+    .inst-preset-8 { background-color: #440033 !important; color: #ffccff; }
+
+    .ch-color-1 { border-color: #ff4444 !important; color: #ff4444; }
+    .ch-color-2 { border-color: #44ff44 !important; color: #44ff44; }
+    .ch-color-3 { border-color: #4444ff !important; color: #4444ff; }
+    .ch-color-4 { border-color: #ffff44 !important; color: #ffff44; }
+    .ch-color-5 { border-color: #ff44ff !important; color: #ff44ff; }
+    .ch-color-6 { border-color: #44ffff !important; color: #44ffff; }
+
+    .piano-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #555; border-radius: 4px; background: #111; }
+    .piano-content { display: flex; flex-direction: column; width: 100%; height: 100%; }
+    .grid-viewport { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+    .grid-container { flex: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
+    
+    .grid-scroll-area { 
+        width: 100%; 
+        background-color: #1a1a1a;
+        background-image: 
+            linear-gradient(to top, #666 1px, transparent 1px),
+            linear-gradient(to top, #444 1px, transparent 1px),
+            linear-gradient(to top, #2a2a2a 1px, transparent 1px);
+        background-size: 100% 320px, 100% 80px, 100% 20px; 
+        background-position: bottom left; 
+        position: relative; 
+    }
+    
+    .play-bar { position: absolute; bottom: 0; left: 0; width: 100%; height: 2px; background: rgba(255, 255, 0, 0.9); box-shadow: 0 -2px 10px #ff0; pointer-events: none; z-index: 30; }
+    
+    .keyboard-row { height: 45px; display: flex; width: 100%; border-top: 2px solid #000; background: #222; z-index: 40; flex-shrink: 0; }
+    .key-col { flex: 1; border-right: 1px solid #000; display: flex; align-items: flex-end; justify-content: center; font-size: 8px; padding-bottom: 4px; cursor: pointer; user-select: none; box-sizing: border-box; overflow: hidden; }
+    .key-white { background: #fff; color: #333; }
+    .key-black { background: #222; color: #aaa; }
+    
+    .note-block { position: absolute; border-radius: 2px; opacity: 0.9; cursor: pointer; mix-blend-mode: screen; border: 1px solid #111; box-sizing: border-box; }
+    .bg-ch-1 { background-color: #ff4444; } .bg-ch-2 { background-color: #44ff44; }
+    .bg-ch-3 { background-color: #4444ff; } .bg-ch-4 { background-color: #ffff44; }
+    .bg-ch-5 { background-color: #ff44ff; } .bg-ch-6 { background-color: #44ffff; }
+
+    #log { height: 50px; background: #000; color: #0f0; overflow-y: auto; padding: 4px; font-family: monospace; font-size: 10px; margin-top: 5px; border: 1px solid #555; border-radius: 4px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div class="panel">
+    <button id="btnConnect">接続</button>
+    <label>Tempo: <input type="range" id="tempo" min="60" max="240" value="150" style="width:50px;"><span id="tempoVal">150</span></label>
+    
+    <div class="panel-group">
+        <button id="btnTop" class="btn-top">|◀ (先頭)</button>
+        <button id="btnPlay" class="btn-play">Play</button>
+        <button id="btnStop" class="btn-stop">Stop</button>
+    </div>
+
+    <div class="panel-group">
+        <label>MIDI:<input type="file" id="midiFile" accept=".mid,.midi" style="width: 140px;"></label>
+    </div>
+    
+    <div class="panel-group">
+        <button id="btnSave" class="btn-save">保存(Save)</button>
+        <label>読込:<input type="file" id="projFile" accept=".json" style="width: 140px;"></label>
+    </div>
+    
+    <span id="stepInfo" style="font-size:11px; font-family:monospace; margin-left:auto;">Step: 0/0</span>
+</div>
+
+<div class="mixer-panel" id="mixerPanel"></div>
+
+<div class="piano-wrapper" id="pianoWrapper">
+    <div class="piano-content">
+        <div class="grid-viewport">
+            <div class="grid-container" id="gridContainer">
+                <div class="grid-scroll-area" id="gridScrollArea"></div>
+            </div>
+            <div class="play-bar" id="playBar"></div>
+        </div>
+        <div class="keyboard-row" id="kbRow"></div>
+    </div>
+</div>
+<div id="log">MIDIファイルを読み込んでください、またはグリッドをクリックして音符を配置してください。</div>
+
+<script>
+let port, writer;
+let totalSteps = 64;
+const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+let rawMidiData = null;
+let currentMidiTimeDivision = 480;
+let trackList = [];
+
+let chActiveNotes = [null, null, null, null, null, null];
+let chAssignments = [-1, -1, -1, -1, -1, -1]; 
+let manualSequenceData = []; 
+let channelPrograms = new Array(16).fill(0);
+channelPrograms[9] = 128; // Drum Kit
+
+// 実際のハードウェア仕様に合わせた9種類の専用プリセット
+const uiapPresets = [
+    { id: 0, name: "🎹 ピアノ系", env: 1, wave: 2, cls: "inst-preset-0" },
+    { id: 1, name: "🔔 ベル/鉄琴系", env: 2, wave: 2, cls: "inst-preset-1" },
+    { id: 2, name: "⛪ オルガン系", env: 0, wave: 0, cls: "inst-preset-2" },
+    { id: 3, name: "🎸 ギター/打楽器系", env: 2, wave: 3, cls: "inst-preset-3" },
+    { id: 4, name: "🎸 ベース系", env: 2, wave: 1, cls: "inst-preset-4" },
+    { id: 5, name: "🎻 ストリングス系", env: 3, wave: 1, cls: "inst-preset-5" },
+    { id: 6, name: "🗣️ コーラス/パッド系", env: 3, wave: 2, cls: "inst-preset-6" },
+    { id: 7, name: "🎺 ブラス/シンセ系", env: 0, wave: 1, cls: "inst-preset-7" },
+    { id: 8, name: "🎷 フルート/笛系", env: 0, wave: 2, cls: "inst-preset-8" }
+];
+
+let instOptionsHTML = `<option value="-1" class="inst-preset--1">-- 楽器選択 --</option>` + 
+    uiapPresets.map(p => `<option value="${p.id}" class="${p.cls}">${p.name}</option>`).join('');
+
+// GM音色番号(0-128)から最適なプリセットID(0-8)へ変換
+function mapGmToPreset(gmNum) {
+    if (gmNum < 0) return -1; 
+    if (gmNum >= 0 && gmNum <= 7) return 0;    // Pianos
+    if (gmNum >= 8 && gmNum <= 15) return 1;   // Mallets
+    if (gmNum >= 16 && gmNum <= 23) return 2;  // Organs
+    if (gmNum >= 24 && gmNum <= 31) return 3;  // Guitars
+    if (gmNum >= 32 && gmNum <= 39) return 4;  // Bass
+    if (gmNum >= 40 && gmNum <= 51) return 5;  // Strings
+    if (gmNum >= 52 && gmNum <= 55) return 6;  // Choir
+    if (gmNum >= 56 && gmNum <= 63) return 7;  // Brass
+    if (gmNum >= 64 && gmNum <= 79) return 8;  // Reed/Pipe
+    if (gmNum >= 80 && gmNum <= 87) return 7;  // Synth Lead
+    if (gmNum >= 88 && gmNum <= 95) return 6;  // Synth Pad
+    if (gmNum >= 96 && gmNum <= 119) return 3; // Ethnic/Perc
+    if (gmNum === 128) return 3;               // Drums
+    return 2; // Default (Organ)
+}
+
+function logMsg(m) { const l = document.getElementById('log'); l.innerText += "\n" + m; l.scrollTop = l.scrollHeight; }
+
+document.getElementById('tempo').oninput = function() { document.getElementById('tempoVal').innerText = this.value; };
+
+async function sendCmd(cmd) {
+    if (!writer) return;
+    await writer.write(new TextEncoder().encode(cmd + "\n"));
+}
+
+document.getElementById('btnConnect').onclick = async () => {
+    try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        document.getElementById('btnConnect').innerText = "接続済";
+        logMsg("[SYSTEM] Connected.");
+    } catch(e) { logMsg("[ERROR] " + e); }
+};
+
+const mixer = document.getElementById('mixerPanel');
+for (let i = 0; i < 6; i++) {
+    let div = document.createElement('div');
+    div.className = `mixer-ch ch-color-${i+1}`;
+    div.innerHTML = `
+        <div class="mixer-ch-header">
+            <span>CH ${i+1}</span>
+            <div style="display:flex; gap:4px;">
+                <label><input type="radio" name="editCh" value="${i}" ${i === 0 ? 'checked' : ''}>Edit</label>
+                <label><input type="checkbox" id="mute-${i}">Mute</label>
+            </div>
+        </div>
+        <select id="sel-trk-${i}">
+            <option value="-1">-- NONE --</option>
+        </select>
+        <select id="inst-${i}" class="inst-preset--1">
+            ${instOptionsHTML}
+        </select>
+        <div class="ch-ctrls">
+            <span>V</span><input type="range" id="vol-${i}" min="0" max="15" value="12">
+            <span>P</span><input type="range" id="pan-${i}" min="0" max="127" value="64">
+        </div>
+    `;
+    mixer.appendChild(div);
+    
+    document.getElementById(`sel-trk-${i}`).onchange = function() {
+        chAssignments[i] = parseInt(this.value);
+        let selInst = document.getElementById(`inst-${i}`);
+        if (chAssignments[i] !== -1) {
+            let pgm = channelPrograms[chAssignments[i]];
+            let presetId = mapGmToPreset(pgm !== undefined ? pgm : 0);
+            selInst.value = presetId;
+            let preset = uiapPresets.find(p => p.id === presetId);
+            if(preset) {
+                selInst.className = preset.cls;
+                sendCmd(`I,${i + 1},${preset.env},${preset.wave}`);
+            }
+        } else {
+            selInst.value = "-1";
+            selInst.className = "inst-preset--1";
+        }
+        rebuildEvents();
+    };
+
+    document.getElementById(`inst-${i}`).onchange = function() {
+        let presetId = parseInt(this.value);
+        let preset = uiapPresets.find(p => p.id === presetId);
+        if(preset) {
+            this.className = preset.cls;
+            sendCmd(`I,${i + 1},${preset.env},${preset.wave}`);
+            logMsg(`[INFO] CH${i + 1} -> ${preset.name} (Env:${preset.env}, Wave:${preset.wave})`);
+        } else {
+            this.className = "inst-preset--1";
+        }
+    };
+
+    document.getElementById(`mute-${i}`).onchange = function() {
+        if (this.checked && chActiveNotes[i] !== null) {
+            let note = chActiveNotes[i];
+            sendCmd(`N,${i + 1},${note},0,64`);
+            chActiveNotes[i] = null;
+            let keyEl = document.getElementById(`key-${note}`);
+            if (keyEl) keyEl.style.backgroundColor = '';
+        }
+    };
+}
+
+const MAX_NOTE = 107; 
+const MIN_NOTE = 24;  
+const TOTAL_KEYS = MAX_NOTE - MIN_NOTE + 1;
+const kb = document.getElementById('kbRow');
+
+for (let n = MIN_NOTE; n <= MAX_NOTE; n++) {
+    let name = noteNames[n % 12] + Math.floor(n / 12 - 1);
+    let k = document.createElement('div');
+    k.id = `key-${n}`;
+    k.className = 'key-col ' + (name.includes("#") ? 'key-black' : 'key-white');
+    k.innerText = name.replace("#", ""); 
+    
+    let isPressed = false;
+    k.onmousedown = () => {
+        isPressed = true;
+        let activeCh = parseInt(document.querySelector('input[name="editCh"]:checked').value);
+        sendCmd(`N,${activeCh + 1},${n},15,64`);
+        k.style.opacity = 0.5;
+    };
+    k.onmouseup = k.onmouseleave = () => {
+        if (isPressed) {
+            let activeCh = parseInt(document.querySelector('input[name="editCh"]:checked').value);
+            sendCmd(`N,${activeCh + 1},${n},0,64`);
+            k.style.opacity = 1;
+            isPressed = false;
+        }
+    };
+    kb.appendChild(k);
+}
+
+function initGrid(newSteps) {
+    totalSteps = newSteps;
+    document.getElementById('stepInfo').innerText = `Step: 0/${totalSteps}`;
+    manualSequenceData = Array.from({ length: totalSteps }, () => ({}));
+    
+    const gsa = document.getElementById('gridScrollArea');
+    gsa.onclick = function(e) {
+        if (e.target !== this) return;
+        let rect = this.getBoundingClientRect();
+        let x = e.clientX - rect.left;
+        let y = e.clientY - rect.top;
+        let note = MIN_NOTE + Math.floor(x / (rect.width / TOTAL_KEYS));
+        let step = Math.floor((this.offsetHeight - y) / 20);
+        if (step >= 0 && step < totalSteps && note >= MIN_NOTE && note <= MAX_NOTE) {
+            toggleManualCell(note, step);
+        }
+    };
+}
+
+function createNoteBlock(step, note, activeCh, length) {
+    let block = document.createElement('div');
+    block.className = `note-block bg-ch-${activeCh + 1}`;
+    block.style.left = `calc((100% / ${TOTAL_KEYS}) * ${note - MIN_NOTE})`;
+    block.style.width = `calc((100% / ${TOTAL_KEYS}) - 1px)`;
+    block.style.bottom = `${step * 20}px`;
+    block.style.height = `${(length * 20) - 1}px`;
+    block.setAttribute('data-step', step);
+    block.setAttribute('data-note', note);
+    block.setAttribute('data-ch', activeCh);
+    block.onclick = (ev) => {
+        ev.stopPropagation();
+        toggleManualCell(note, step);
+    };
+    return block;
+}
+
+function renderGrid() {
+    const gsa = document.getElementById('gridScrollArea');
+    gsa.innerHTML = "";
+    let gridHeight = (totalSteps * 20) + 1500; 
+    gsa.style.height = gridHeight + 'px';
+    for(let step = 0; step < totalSteps; step++) {
+        if(!manualSequenceData[step]) continue;
+        for(let note in manualSequenceData[step]) {
+            for(let ch in manualSequenceData[step][note]) {
+                let activeCh = parseInt(ch);
+                let n = parseInt(note);
+                let length = manualSequenceData[step][note][ch];
+                let block = createNoteBlock(step, n, activeCh, length);
+                gsa.appendChild(block);
+            }
+        }
+    }
+    let gc = document.getElementById('gridContainer');
+    gc.scrollTop = gc.scrollHeight - gc.clientHeight;
+}
+
+function toggleManualCell(note, step) {
+    let activeCh = parseInt(document.querySelector('input[name="editCh"]:checked').value);
+    let gsa = document.getElementById('gridScrollArea');
+    if (!manualSequenceData[step][note]) manualSequenceData[step][note] = {};
+
+    if (manualSequenceData[step][note][activeCh]) {
+        delete manualSequenceData[step][note][activeCh];
+        let existing = gsa.querySelector(`[data-step="${step}"][data-note="${note}"][data-ch="${activeCh}"]`);
+        if (existing) existing.remove();
+        if (Object.keys(manualSequenceData[step][note]).length === 0) delete manualSequenceData[step][note];
+    } else {
+        manualSequenceData[step][note][activeCh] = 1;
+        let block = createNoteBlock(step, note, activeCh, 1);
+        gsa.appendChild(block);
+    }
+}
+
+initGrid(64);
+renderGrid();
+
+document.getElementById('midiFile').onchange = function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        rawMidiData = MidiParser.parse(new Uint8Array(e.target.result));
+        analyzeMidi(rawMidiData);
+    };
+    reader.readAsArrayBuffer(file);
+};
+
+function analyzeMidi(midi) {
+    currentMidiTimeDivision = midi.timeDivision;
+    let channelNoteCounts = new Array(16).fill(0);
+    channelPrograms = new Array(16).fill(0);
+    channelPrograms[9] = 128;
+    
+    midi.track.forEach(track => {
+        track.event.forEach(ev => {
+            if (ev.channel !== undefined) {
+                if (ev.type === 9 && ev.data[1] > 0) channelNoteCounts[ev.channel]++;
+                else if (ev.type === 12) channelPrograms[ev.channel] = Array.isArray(ev.data) ? ev.data[0] : ev.data;
+            }
+        });
+    });
+
+    trackList = [];
+    for (let c = 0; c < 16; c++) {
+        if (c !== 9 && channelNoteCounts[c] > 0) trackList.push({ idx: c, name: `MIDI Ch ${c + 1}`, count: channelNoteCounts[c] });
+    }
+    if (channelNoteCounts[9] > 0) trackList.push({ idx: 9, name: `MIDI Ch 10 (Drums)`, count: channelNoteCounts[9] });
+    trackList.sort((a, b) => b.count - a.count);
+    
+    for (let i = 0; i < 6; i++) {
+        let selTrk = document.getElementById(`sel-trk-${i}`);
+        selTrk.innerHTML = '<option value="-1">-- NONE --</option>';
+        trackList.forEach(t => {
+            let opt = document.createElement('option');
+            opt.value = t.idx;
+            opt.text = `[Ch ${t.idx + 1}] (${t.count} notes)`;
+            selTrk.appendChild(opt);
+        });
+        
+        let selInst = document.getElementById(`inst-${i}`);
+        if (i < trackList.length) {
+            selTrk.value = trackList[i].idx;
+            chAssignments[i] = trackList[i].idx;
+            let pgm = channelPrograms[trackList[i].idx];
+            let presetId = mapGmToPreset(pgm !== undefined ? pgm : 0);
+            selInst.value = presetId;
+            let preset = uiapPresets.find(p => p.id === presetId);
+            if(preset) {
+                selInst.className = preset.cls;
+                sendCmd(`I,${i + 1},${preset.env},${preset.wave}`);
+            }
+        } else {
+            selTrk.value = "-1";
+            chAssignments[i] = -1;
+            selInst.value = "-1";
+            selInst.className = "inst-preset--1";
+        }
+    }
+    rebuildEvents();
+    logMsg(`[MIDI] 解析・マッピング完了。専用プリセットへ自動変換しました。`);
+}
+
+function rebuildEvents() {
+    if (!rawMidiData) return;
+    let tempEvents = [];
+    let maxTick = 0;
+    
+    for (let ch = 0; ch < 6; ch++) {
+        let targetMidiCh = chAssignments[ch];
+        if (targetMidiCh === -1) continue;
+        let eventsByTick = {};
+        rawMidiData.track.forEach(track => {
+            let curTick = 0;
+            track.event.forEach(ev => {
+                curTick += ev.deltaTime;
+                if (ev.channel === targetMidiCh) {
+                    if (curTick > maxTick) maxTick = curTick;
+                    if (ev.type === 9 || ev.type === 8) {
+                        if (!eventsByTick[curTick]) eventsByTick[curTick] = [];
+                        eventsByTick[curTick].push(ev);
+                    }
+                }
+            });
+        });
+        
+        let sortedTicks = Object.keys(eventsByTick).map(Number).sort((a, b) => a - b);
+        let activeNotes = {};
+        
+        sortedTicks.forEach(tick => {
+            eventsByTick[tick].forEach(ev => {
+                let note = ev.data[0];
+                if (ev.type === 9 && ev.data[1] > 0) {
+                    if (activeNotes[note] === undefined) activeNotes[note] = tick;
+                } else if (ev.type === 8 || (ev.type === 9 && ev.data[1] === 0)) {
+                    if (activeNotes[note] !== undefined) {
+                        tempEvents.push({ startTick: activeNotes[note], endTick: tick, note: note, ch: ch });
+                        delete activeNotes[note];
+                    }
+                }
+            });
+        });
+        for (let note in activeNotes) tempEvents.push({ startTick: activeNotes[note], endTick: maxTick, note: parseInt(note), ch: ch });
+    }
+    
+    let ticksPerStep = currentMidiTimeDivision / 4; 
+    if (tempEvents.length > 0) {
+        let firstTick = Math.min(...tempEvents.map(e => e.startTick));
+        let offsetTick = Math.max(0, firstTick - ticksPerStep);
+        tempEvents.forEach(e => { e.startTick = Math.max(0, e.startTick - offsetTick); e.endTick = Math.max(0, e.endTick - offsetTick); });
+        maxTick = Math.max(0, maxTick - offsetTick);
+    }
+    
+    let maxStep = Math.ceil(maxTick / ticksPerStep);
+    initGrid(maxStep + 16);
+    
+    tempEvents.forEach(e => {
+        let startStep = Math.round(e.startTick / ticksPerStep);
+        let endStep = Math.round(e.endTick / ticksPerStep);
+        let length = Math.max(1, endStep - startStep);
+        if (startStep >= 0 && startStep < totalSteps && e.note >= MIN_NOTE && e.note <= MAX_NOTE) {
+            if (!manualSequenceData[startStep][e.note]) manualSequenceData[startStep][e.note] = {};
+            manualSequenceData[startStep][e.note][e.ch] = length;
+        }
+    });
+    
+    for(let step = 0; step < totalSteps; step++) {
+        let chHighNote = {};
+        for(let note in manualSequenceData[step]) {
+            for(let ch in manualSequenceData[step][note]) {
+                let n = parseInt(note);
+                if (!chHighNote[ch] || chHighNote[ch].note < n) {
+                    chHighNote[ch] = { note: n, data: manualSequenceData[step][note][ch] };
+                }
+            }
+        }
+        manualSequenceData[step] = {};
+        for(let ch in chHighNote) {
+            let n = chHighNote[ch].note;
+            if(!manualSequenceData[step][n]) manualSequenceData[step][n] = {};
+            manualSequenceData[step][n][parseInt(ch)] = chHighNote[ch].data;
+        }
+    }
+    renderGrid();
+}
+
+function resetKeys() {
+    for(let n = MIN_NOTE; n <= MAX_NOTE; n++) {
+        let k = document.getElementById(`key-${n}`);
+        if (k) k.style.backgroundColor = '';
+    }
+}
+
+document.getElementById('btnSave').onclick = () => {
+    let instSettings = [];
+    for(let i=0; i<6; i++) instSettings.push(document.getElementById(`inst-${i}`).value);
+    let data = { tempo: document.getElementById('tempo').value, totalSteps: totalSteps, manualSequenceData: manualSequenceData, instSettings: instSettings };
+    let blob = new Blob([JSON.stringify(data)], {type: 'application/json'});
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement('a'); a.href = url; a.download = 'uiap_project.json'; a.click();
+    URL.revokeObjectURL(url);
+    logMsg("[INFO] プロジェクトを保存しました。");
+};
+
+document.getElementById('projFile').onchange = function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            let data = JSON.parse(e.target.result);
+            if(data.tempo) {
+                document.getElementById('tempo').value = data.tempo;
+                document.getElementById('tempoVal').innerText = data.tempo;
+            }
+            if(data.instSettings) {
+                for(let i=0; i<6; i++) {
+                    if(data.instSettings[i] !== undefined && data.instSettings[i] !== null) {
+                        let presetId = parseInt(data.instSettings[i]);
+                        // 旧バージョン(V0.31以前)のGM配列データ互換対応
+                        if (presetId > 8 || presetId === 128) presetId = mapGmToPreset(presetId);
+                        
+                        let selInst = document.getElementById(`inst-${i}`);
+                        selInst.value = presetId;
+                        let preset = uiapPresets.find(p => p.id === presetId);
+                        if(preset) {
+                            selInst.className = preset.cls;
+                            sendCmd(`I,${i + 1},${preset.env},${preset.wave}`);
+                        } else {
+                            selInst.className = "inst-preset--1";
+                        }
+                    }
+                }
+            }
+            if(data.totalSteps && data.manualSequenceData) {
+                initGrid(data.totalSteps);
+                for(let step = 0; step < totalSteps; step++) {
+                    let stepData = data.manualSequenceData[step];
+                    if(!stepData) continue;
+                    manualSequenceData[step] = {};
+                    for(let note in stepData) {
+                        let cellData = stepData[note];
+                        manualSequenceData[step][note] = {};
+                        for(let ch in cellData) {
+                            manualSequenceData[step][note][parseInt(ch)] = (cellData[ch] === true) ? 1 : cellData[ch];
+                        }
+                    }
+                }
+                renderGrid();
+                logMsg("[INFO] プロジェクトを読み込みました。");
+            }
+        } catch(err) { logMsg("[ERROR] 読込に失敗しました。無効なファイルです。"); }
+    };
+    reader.readAsText(file);
+    this.value = ''; 
+};
+
+document.getElementById('btnTop').onclick = () => {
+    let gc = document.getElementById('gridContainer');
+    gc.scrollTop = gc.scrollHeight - gc.clientHeight;
+};
+
+let isPlaying = false, currentStep = 0;
+let startTime = 0, timer;
+let activePlayingNotes = []; 
+
+document.getElementById('btnPlay').onclick = () => { 
+    if(!isPlaying){ 
+        isPlaying = true; 
+        
+        for(let i=0; i<6; i++) {
+            let presetId = parseInt(document.getElementById(`inst-${i}`).value);
+            let preset = uiapPresets.find(p => p.id === presetId);
+            if(preset) {
+                sendCmd(`I,${i + 1},${preset.env},${preset.wave}`);
+            }
+        }
+
+        let gc = document.getElementById('gridContainer');
+        let bottomOffsetPx = gc.scrollHeight - gc.clientHeight - gc.scrollTop;
+        if(bottomOffsetPx < 0) bottomOffsetPx = 0;
+
+        let tempo = document.getElementById('tempo').value;
+        chActiveNotes = [null, null, null, null, null, null];
+        activePlayingNotes = [];
+        resetKeys();
+
+        currentStep = Math.floor(bottomOffsetPx / 20);
+        let msPerStep = (60000 / tempo) / 4;
+        startTime = performance.now() - (bottomOffsetPx / 20) * msPerStep;
+        
+        play(); 
+    } 
+};
+
+document.getElementById('btnStop').onclick = () => { 
+    isPlaying = false; cancelAnimationFrame(timer); sendCmd('S'); activePlayingNotes = []; resetKeys();
+};
+
+function play() {
+    if (!isPlaying) return;
+    
+    let tempo = document.getElementById('tempo').value;
+    let msPerStep = (60000 / tempo) / 4;
+    let now = performance.now();
+    let exactStep = (now - startTime) / msPerStep;
+    
+    let gc = document.getElementById('gridContainer');
+    gc.scrollTop = (gc.scrollHeight - gc.clientHeight) - (exactStep * 20);
+
+    activePlayingNotes = activePlayingNotes.filter(item => {
+        if (exactStep >= item.endStep) {
+            sendCmd(`N,${item.ch + 1},${item.note},0,${item.pan}`);
+            let keyEl = document.getElementById(`key-${item.note}`);
+            if(keyEl) keyEl.style.backgroundColor = '';
+            if(chActiveNotes[item.ch] === item.note) chActiveNotes[item.ch] = null;
+            return false;
+        }
+        return true;
+    });
+
+    while (currentStep <= Math.floor(exactStep)) {
+        if (currentStep >= totalSteps) { isPlaying = false; sendCmd('S'); resetKeys(); return; }
+        document.getElementById('stepInfo').innerText = `Step: ${currentStep}/${totalSteps}`;
+        if (manualSequenceData[currentStep]) {
+            for (let noteNum in manualSequenceData[currentStep]) {
+                for (let ch in manualSequenceData[currentStep][noteNum]) {
+                    let activeCh = parseInt(ch);
+                    if (!document.getElementById(`mute-${activeCh}`).checked) {
+                        let length = manualSequenceData[currentStep][noteNum][activeCh];
+                        let vol = parseInt(document.getElementById(`vol-${activeCh}`).value);
+                        let pan = parseInt(document.getElementById(`pan-${activeCh}`).value);
+                        let n = parseInt(noteNum);
+                        
+                        let existingIdx = activePlayingNotes.findIndex(i => i.ch === activeCh);
+                        if(existingIdx !== -1) {
+                            let exNote = activePlayingNotes[existingIdx];
+                            sendCmd(`N,${exNote.ch + 1},${exNote.note},0,${exNote.pan}`);
+                            let k = document.getElementById(`key-${exNote.note}`);
+                            if(k) k.style.backgroundColor = '';
+                            activePlayingNotes.splice(existingIdx, 1);
+                        }
+
+                        sendCmd(`N,${activeCh + 1},${n},${vol},${pan}`);
+                        let keyEl = document.getElementById(`key-${n}`);
+                        if(keyEl) keyEl.style.backgroundColor = '#88f';
+                        chActiveNotes[activeCh] = n;
+                        
+                        activePlayingNotes.push({
+                            note: n,
+                            ch: activeCh,
+                            endStep: currentStep + length,
+                            pan: pan
+                        });
+                    }
+                }
+            }
+        }
+        currentStep++;
+    }
+    timer = requestAnimationFrame(play);
+}
+</script>
+</body>
+</html>
