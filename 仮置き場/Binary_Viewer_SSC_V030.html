@@ -1,0 +1,769 @@
+<!--
+==============================================================================
+Version: 0.30
+
+[変更履歴]
+- v0.01 (2026-05-27): 新規作成。JPEG, PNG, GIF, BMPの抽出機能を実装。
+- v0.02 (2026-05-27): 誤検知対策としてファイルサイズ10KB以下のデータを無視する機能を追加。
+- v0.03 (2026-05-27): 足切りサイズを10KBから500バイトに緩和。
+- v0.04 (2026-05-27): 画像データの内部構造（ヘッダーの詳細など）を厳密にチェック。
+- v0.05 (2026-05-27): 16bpp(RGB565)の縦長BMP画像として強制出力する機能に全面刷新。
+- v0.06 (2026-05-27): 横幅240pxに固定し、8ビットグレースケールとして出力。
+- v0.07 (2026-05-27): RGB332およびRGB565のフルカラーBMPとして復元・出力する処理に刷新。
+- v0.08 (2026-05-27): 横幅120, 160, 320pxに変更し、8ビットグレースケールで出力。
+- v0.09 (2026-05-27): エントロピー解析による自動探索機能に刷新。
+- v0.10 (2026-05-27): 候補番地をピンポイントで抽出する機能を追加。
+- v0.11 (2026-05-27): 特殊な「8x8タイル形式」の復元デコード処理を実装。
+- v0.12 (2026-05-27): リアルタイムに変更できるバイナリ画像ビューアーとして新規作成。
+- v0.13 (2026-07-19): カラーモード切替機能を追加。
+- v0.14 (2026-07-19): 「16bpp カラー (バイト順反転)」と「YUV フォーマット」を追加。
+- v0.15 (2026-07-19): 赤青逆転「16bpp カラー (BGR565)」およびYUV(UYVY形式)を追加。
+- v0.16 (2026-07-19): YUVの残り配列パターン（VYUY、YVYU）を追加。
+- v0.17 (2026-07-19): 24bpp(RGB888, BGR888)フルカラー解読処理を追加。デフォルト横幅240px。
+- v0.18 (2026-07-19): 24bppの全順列（GRB, GBR, BRG, RBG）および24bpp版YUVを追加。
+- v0.19 (2026-07-19): 1ビット単位のビットシフト読み出し機能を実装。
+- v0.20 (2026-07-19): パレット（色見本）探索機能を追加。
+- v0.21 (2026-07-19): PC-98特有の「4bpp ビットプレーン方式」の合成処理を追加。
+- v0.22 (2026-07-19): 画像表示エリアのズーム（拡大率1倍〜20倍）機能を追加。
+- v0.23 (2026-07-19): ファイル変更時のオフセットバグを修正、削除モードの復元。
+- v0.24 (2026-07-19): 変更履歴の日付を修正。オートスキャン（自動再生・停止・速度調整）機能を追加。
+- v0.25 (2026-07-19): UIを左サイドバー固定配置に刷新。説明文を削除し、画像表示エリアを最大化。
+- v0.26 (2026-07-19): 隣接ピクセルの連続性を数学的に評価し、スマートスキャン機能を追加。
+- v0.27 (2026-07-19): JPEGおよびPNGマジックナンバー検知による圧縮画像の一括抽出機能を追加。
+- v0.28 (2026-07-19): JPEG抽出ロジックをチャンク・パススルー方式に刷新。サムネイルによる誤検知を回避。
+- v0.29 (2026-07-19): 抽出結果エリアを画面最上部に移動。横スクロール対応で一覧性を向上。
+- v0.30 (2026-07-21): v0.28の全解析ロジック（カラーモード全種・ズーム・パレット等）を完全復元し、v0.29のUIと統合。
+==============================================================================
+-->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>リアルタイム・バイナリビューアー (完全版)</title>
+    <style>
+        body { 
+            font-family: sans-serif; 
+            background-color: #e0e5ec; 
+            margin: 0; 
+            display: flex; 
+            height: 100vh; 
+            overflow: hidden; 
+        }
+        .sidebar {
+            width: 280px; 
+            min-width: 280px; 
+            background: #ffffff; 
+            padding: 15px; 
+            overflow-y: auto; 
+            box-shadow: 2px 0 5px rgba(0,0,0,0.2); 
+            z-index: 10;
+            font-size: 13px;
+        }
+        .main-view {
+            flex-grow: 1; 
+            display: flex; 
+            flex-direction: column;
+            overflow: hidden;
+            background-color: #e0e5ec;
+        }
+        #extractionResults {
+            height: 220px;
+            min-height: 220px;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            overflow-x: auto;
+            border-bottom: 2px solid #bdc3c7;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        #canvasContainer {
+            flex-grow: 1;
+            overflow: auto;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        .control-group { 
+            margin-bottom: 12px; 
+        }
+        .control-group label { 
+            font-weight: bold; 
+            color: #333; 
+            display: block; 
+            margin-bottom: 4px; 
+        }
+        .control-row { 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+        }
+        input[type="number"] { 
+            width: 80px; 
+            padding: 4px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+            box-sizing: border-box;
+        }
+        input[type="range"] { 
+            flex-grow: 1; 
+        }
+        select, input[type="file"] { 
+            width: 100%; 
+            padding: 4px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+            box-sizing: border-box; 
+        }
+        .scan-section {
+            background-color: #fff4e6;
+            padding: 10px;
+            border-left: 4px solid #f39c12;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+        .scan-section button {
+            width: 100%;
+            padding: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+            background-color: #e74c3c;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 8px;
+        }
+        .scan-section button.playing {
+            background-color: #3498db;
+        }
+        canvas { 
+            background: #000; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); 
+            image-rendering: pixelated; 
+            border: 2px solid #333;
+        }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <div class="control-group">
+        <label>ROMファイル:</label>
+        <input type="file" id="fileInput" accept=".bin,.rom,*">
+    </div>
+    
+    <div class="scan-section" style="background-color: #e6f7ff; border-left-color: #3498db;">
+        <label style="font-weight: bold; color: #333; display: block; margin-bottom: 6px;">圧縮画像 自動抽出</label>
+        <button id="extractBtn" style="background-color: #2980b9;">JPEG / PNG 抽出</button>
+    </div>
+
+    <div class="control-group">
+        <label>カラーモード:</label>
+        <select id="colorMode">
+            <optgroup label="ダイレクトカラー (従来方式)">
+                <option value="rgb565" selected>16bpp カラー (RGB565 標準)</option>
+                <option value="rgb565_rev">16bpp カラー (バイト順反転)</option>
+                <option value="bgr565">16bpp カラー (BGR565 赤青逆転)</option>
+                <option value="rgb888">24bpp フルカラー (RGB888 基準)</option>
+                <option value="bgr888">24bpp フルカラー (BGR888)</option>
+                <option value="grb888">24bpp フルカラー (GRB888)</option>
+                <option value="gbr888">24bpp フルカラー (GBR888)</option>
+                <option value="brg888">24bpp フルカラー (BRG888)</option>
+                <option value="rbg888">24bpp フルカラー (RBG888)</option>
+                <option value="yuv888">24bpp フルカラー (YUV 4:4:4)</option>
+                <option value="gray">8bpp 白黒</option>
+                <option value="rgb332">8bpp カラー (RGB332)</option>
+                <option value="yuv">16bpp YUV (YUYV配列)</option>
+                <option value="uyvy">16bpp YUV (UYVY配列)</option>
+                <option value="vyuy">16bpp YUV (VYUY配列)</option>
+                <option value="yvyu">16bpp YUV (YVYU配列)</option>
+            </optgroup>
+            <optgroup label="レトロPC (ビットプレーン)">
+                <option value="pc98_planar">PC-98 4bpp (プレーン分離)</option>
+                <option value="pc98_interleaved">PC-98 4bpp (インターリーブ)</option>
+            </optgroup>
+            <optgroup label="パレット探索 (インデックス)">
+                <option value="palette_rgb565">8bpp パレット (RGB565)</option>
+                <option value="palette_bgr565">8bpp パレット (BGR565)</option>
+                <option value="palette_rgb888">8bpp パレット (RGB888)</option>
+                <option value="palette_bgr888">8bpp パレット (BGR888)</option>
+            </optgroup>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label>画像オフセット (開始位置):</label>
+        <div class="control-row">
+            <input type="number" id="offsetNum" value="0" min="0">
+            <input type="range" id="offsetSlider" value="0" min="0" step="1">
+        </div>
+    </div>
+
+    <div class="scan-section">
+        <label style="font-weight: bold; color: #333; display: block; margin-bottom: 6px;">スマートスキャン</label>
+        <button id="scanBtn">▶ 再生</button>
+        <div class="control-row">
+            <span style="font-weight: bold; font-size: 12px; color: #555;">速度:</span>
+            <input type="range" id="scanSpeed" value="2" min="1" max="100">
+        </div>
+        <div style="margin-top: 8px; border-top: 1px dashed #ccc; padding-top: 8px;">
+            <label style="font-weight: normal; font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="smartStop" checked> 画像検知で自動停止
+            </label>
+            <div class="control-row" style="margin-top: 4px;">
+                <span style="font-size: 11px; color: #555;">感度:</span>
+                <input type="range" id="smartSens" value="10" min="1" max="50">
+            </div>
+            <div id="scanScore" style="font-size: 11px; color: #e74c3c; font-weight: bold; text-align: right; height: 14px; margin-top: 4px;"></div>
+        </div>
+    </div>
+
+    <div class="control-group" style="background: #f9f9fc; padding: 8px; border-radius: 4px;">
+        <label>パレットオフセット:</label>
+        <div class="control-row">
+            <input type="number" id="paletteOffsetNum" value="0" min="0">
+            <input type="range" id="paletteOffsetSlider" value="0" min="0" step="1">
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>横幅 (Width):</label>
+        <div class="control-row">
+            <input type="number" id="widthNum" value="240" min="1" max="2000">
+            <input type="range" id="widthSlider" value="240" min="1" max="2000" step="1">
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>ズーム (拡大率):</label>
+        <div class="control-row">
+            <input type="number" id="zoomNum" value="2" min="1" max="20">
+            <input type="range" id="zoomSlider" value="2" min="1" max="20" step="1">
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>ビットシフト (0-7):</label>
+        <div class="control-row">
+            <input type="number" id="bitOffsetNum" value="0" min="0" max="7">
+            <input type="range" id="bitOffsetSlider" value="0" min="0" max="7" step="1">
+        </div>
+    </div>
+</div>
+
+<div class="main-view">
+    <div id="extractionResults" style="display: none;"></div>
+    <div id="canvasContainer">
+        <canvas id="screen"></canvas>
+    </div>
+</div>
+
+<script>
+    let romData = null;
+    const screen = document.getElementById('screen');
+    const ctx = screen.getContext('2d');
+    
+    const fileInput = document.getElementById('fileInput');
+    const colorMode = document.getElementById('colorMode');
+    const offsetNum = document.getElementById('offsetNum');
+    const offsetSlider = document.getElementById('offsetSlider');
+    const paletteOffsetNum = document.getElementById('paletteOffsetNum');
+    const paletteOffsetSlider = document.getElementById('paletteOffsetSlider');
+    const bitOffsetNum = document.getElementById('bitOffsetNum');
+    const bitOffsetSlider = document.getElementById('bitOffsetSlider');
+    const widthNum = document.getElementById('widthNum');
+    const widthSlider = document.getElementById('widthSlider');
+    const zoomNum = document.getElementById('zoomNum');
+    const zoomSlider = document.getElementById('zoomSlider');
+
+    const scanBtn = document.getElementById('scanBtn');
+    const scanSpeed = document.getElementById('scanSpeed');
+    const smartStop = document.getElementById('smartStop');
+    const smartSens = document.getElementById('smartSens');
+    const scanScoreDisplay = document.getElementById('scanScore');
+    let scanInterval = null;
+
+    const extractBtn = document.getElementById('extractBtn');
+    const extractionResults = document.getElementById('extractionResults');
+
+    const DISPLAY_HEIGHT = 800; 
+    let currentSmartScore = 0;
+
+    function clamp(val) {
+        return Math.max(0, Math.min(255, val));
+    }
+
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            romData = new Uint8Array(event.target.result);
+            offsetSlider.max = romData.length;
+            offsetNum.max = romData.length;
+            paletteOffsetSlider.max = romData.length;
+            paletteOffsetNum.max = romData.length;
+
+            if (parseInt(offsetNum.value, 10) >= romData.length) {
+                offsetNum.value = 0;
+                offsetSlider.value = 0;
+            }
+            if (parseInt(paletteOffsetNum.value, 10) >= romData.length) {
+                paletteOffsetNum.value = 0;
+                paletteOffsetSlider.value = 0;
+            }
+            
+            extractionResults.innerHTML = '';
+            extractionResults.style.display = 'none';
+            draw();
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    colorMode.addEventListener('change', draw);
+    offsetNum.addEventListener('input', () => { offsetSlider.value = offsetNum.value; draw(); });
+    offsetSlider.addEventListener('input', () => { offsetNum.value = offsetSlider.value; draw(); });
+    paletteOffsetNum.addEventListener('input', () => { paletteOffsetSlider.value = paletteOffsetNum.value; draw(); });
+    paletteOffsetSlider.addEventListener('input', () => { paletteOffsetNum.value = paletteOffsetSlider.value; draw(); });
+    bitOffsetNum.addEventListener('input', () => { bitOffsetSlider.value = bitOffsetNum.value; draw(); });
+    bitOffsetSlider.addEventListener('input', () => { bitOffsetNum.value = bitOffsetSlider.value; draw(); });
+    widthNum.addEventListener('input', () => { widthSlider.value = widthNum.value; draw(); });
+    widthSlider.addEventListener('input', () => { widthNum.value = widthSlider.value; draw(); });
+    zoomNum.addEventListener('input', () => { zoomSlider.value = zoomNum.value; draw(); });
+    zoomSlider.addEventListener('input', () => { zoomNum.value = zoomSlider.value; draw(); });
+
+    scanBtn.addEventListener('click', () => {
+        if (!romData) return;
+        
+        if (scanInterval) {
+            clearInterval(scanInterval);
+            scanInterval = null;
+            scanBtn.textContent = '▶ 再生';
+            scanBtn.classList.remove('playing');
+        } else {
+            scanBtn.textContent = '■ 停止';
+            scanBtn.classList.add('playing');
+            
+            scanInterval = setInterval(() => {
+                let currentOffset = parseInt(offsetNum.value, 10);
+                let speed = parseInt(scanSpeed.value, 10);
+                
+                currentOffset += speed;
+                if (currentOffset >= romData.length) currentOffset = 0;
+                
+                offsetNum.value = currentOffset;
+                offsetSlider.value = currentOffset;
+                
+                draw();
+
+                if (smartStop.checked) {
+                    let threshold = parseInt(smartSens.value, 10);
+                    if (currentSmartScore >= threshold) {
+                        clearInterval(scanInterval);
+                        scanInterval = null;
+                        scanBtn.textContent = '▶ 再生';
+                        scanBtn.classList.remove('playing');
+                    }
+                }
+            }, 33);
+        }
+    });
+
+    extractBtn.addEventListener('click', () => {
+        if (!romData) return;
+        extractionResults.style.display = 'flex';
+        extractionResults.innerHTML = '<div style="width: 100%; color: #333; text-align: center; font-weight: bold;">検索中... (数秒かかる場合があります)</div>';
+        
+        setTimeout(() => {
+            let foundCount = 0;
+            extractionResults.innerHTML = '';
+            
+            for (let i = 0; i < romData.length - 2; i++) {
+                if (romData[i] === 0xFF && romData[i+1] === 0xD8 && romData[i+2] === 0xFF) {
+                    let start = i;
+                    let end = romData.length;
+                    for (let j = start + 3; j < romData.length - 2; j++) {
+                        if (romData[j] === 0xFF && romData[j+1] === 0xD8 && romData[j+2] === 0xFF) {
+                            end = j;
+                            break;
+                        }
+                    }
+                    if (end - start > 500) {
+                        let blob = new Blob([romData.slice(start, end)], {type: 'image/jpeg'});
+                        let url = URL.createObjectURL(blob);
+                        let wrapper = document.createElement('div');
+                        wrapper.style.background = '#fff';
+                        wrapper.style.padding = '10px';
+                        wrapper.style.borderRadius = '4px';
+                        wrapper.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                        wrapper.style.flexShrink = '0';
+                        wrapper.innerHTML = `<div style="font-size: 11px; color: #666; margin-bottom: 4px; font-weight:bold;">JPEG [Offset: ${start}]</div><img src="${url}" style="max-width: 250px; max-height: 150px; border: 1px solid #ccc; display: block;">`;
+                        extractionResults.appendChild(wrapper);
+                        foundCount++;
+                        i = end - 1;
+                    }
+                }
+            }
+
+            const pngMagic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            const pngEnd = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
+            for (let i = 0; i < romData.length - 8; i++) {
+                let match = true;
+                for (let k = 0; k < 8; k++) {
+                    if (romData[i+k] !== pngMagic[k]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    let start = i;
+                    let end = -1;
+                    for (let j = start + 8; j < romData.length - 8; j++) {
+                        let endMatch = true;
+                        for (let k = 0; k < 8; k++) {
+                            if (romData[j+k] !== pngEnd[k]) {
+                                endMatch = false;
+                                break;
+                            }
+                        }
+                        if (endMatch) {
+                            end = j + 8;
+                            break;
+                        }
+                    }
+                    if (end !== -1) {
+                        let blob = new Blob([romData.slice(start, end)], {type: 'image/png'});
+                        let url = URL.createObjectURL(blob);
+                        let wrapper = document.createElement('div');
+                        wrapper.style.background = '#fff';
+                        wrapper.style.padding = '10px';
+                        wrapper.style.borderRadius = '4px';
+                        wrapper.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                        wrapper.style.flexShrink = '0';
+                        wrapper.innerHTML = `<div style="font-size: 11px; color: #666; margin-bottom: 4px; font-weight:bold;">PNG [Offset: ${start}]</div><img src="${url}" style="max-width: 250px; max-height: 150px; border: 1px solid #ccc; display: block;">`;
+                        extractionResults.appendChild(wrapper);
+                        foundCount++;
+                        i = end;
+                    }
+                }
+            }
+
+            if (foundCount === 0) {
+                extractionResults.innerHTML = '<div style="width: 100%; color: #e74c3c; font-weight: bold; text-align: center;">ファイル内にJPEG / PNG画像は見つかりませんでした。</div>';
+            }
+        }, 100);
+    });
+
+    function draw() {
+        if (!romData) return;
+
+        const width = parseInt(widthNum.value, 10);
+        const offset = parseInt(offsetNum.value, 10);
+        const palOffset = parseInt(paletteOffsetNum.value, 10);
+        const bitShift = parseInt(bitOffsetNum.value, 10);
+        const zoom = parseInt(zoomNum.value, 10);
+        const mode = colorMode.value;
+        
+        if (width <= 0) return;
+
+        screen.width = width;
+        screen.height = DISPLAY_HEIGHT;
+        screen.style.width = (width * zoom) + 'px';
+        screen.style.height = (DISPLAY_HEIGHT * zoom) + 'px';
+
+        const imgData = ctx.createImageData(width, DISPLAY_HEIGHT);
+        const data = imgData.data;
+
+        const getByte = (idx) => {
+            if (bitShift === 0) return romData[idx];
+            if (idx + 1 >= romData.length) return (romData[idx] << bitShift) & 0xFF;
+            return ((romData[idx] << bitShift) | (romData[idx + 1] >> (8 - bitShift))) & 0xFF;
+        };
+
+        let romIndex = offset;
+        let currentByteB = 0, currentByteR = 0, currentByteG = 0, currentByteI = 0;
+        let pixelsDrawn = 0;
+        
+        for (let i = 0; i < width * DISPLAY_HEIGHT; i++) {
+            if (romIndex >= romData.length) break;
+            pixelsDrawn++;
+
+            const pixelIndex = i * 4;
+
+            if (mode.startsWith('pc98')) {
+                if (i % 8 === 0) {
+                    if (mode === 'pc98_planar') {
+                        const planeSize = 32000;
+                        if (romIndex + planeSize * 3 >= romData.length) break;
+                        currentByteB = getByte(romIndex);
+                        currentByteR = getByte(romIndex + planeSize);
+                        currentByteG = getByte(romIndex + planeSize * 2);
+                        currentByteI = getByte(romIndex + planeSize * 3);
+                        romIndex++;
+                    } else {
+                        if (romIndex + 3 >= romData.length) break;
+                        currentByteB = getByte(romIndex);
+                        currentByteR = getByte(romIndex + 1);
+                        currentByteG = getByte(romIndex + 2);
+                        currentByteI = getByte(romIndex + 3);
+                        romIndex += 4;
+                    }
+                }
+                
+                const bit = 7 - (i % 8);
+                const b = (currentByteB >> bit) & 1;
+                const r = (currentByteR >> bit) & 1;
+                const g = (currentByteG >> bit) & 1;
+                const i_bit = (currentByteI >> bit) & 1;
+                
+                const colorIndex = (i_bit << 3) | (g << 2) | (r << 1) | b;
+                const pc98_pal = [
+                    [0,0,0], [0,0,170], [170,0,0], [170,0,170],
+                    [0,170,0], [0,170,170], [170,170,0], [170,170,170],
+                    [85,85,85], [85,85,255], [255,85,85], [255,85,255],
+                    [85,255,85], [85,255,255], [255,255,85], [255,255,255]
+                ];
+                const c = pc98_pal[colorIndex];
+                
+                data[pixelIndex] = c[0];
+                data[pixelIndex + 1] = c[1];
+                data[pixelIndex + 2] = c[2];
+                data[pixelIndex + 3] = 255;
+            }
+            else if (mode.startsWith('palette_')) {
+                const colorIdx = getByte(romIndex);
+                romIndex++;
+
+                let pIdx = palOffset;
+                let r = 0, g = 0, b = 0;
+
+                if (mode === 'palette_rgb565' || mode === 'palette_bgr565') {
+                    pIdx += colorIdx * 2;
+                    if (pIdx + 1 < romData.length) {
+                        const val = romData[pIdx] | (romData[pIdx + 1] << 8);
+                        if (mode === 'palette_rgb565') {
+                            r = (val & 0xF800) >> 11;
+                            g = (val & 0x07E0) >> 5;
+                            b = val & 0x001F;
+                        } else {
+                            b = (val & 0xF800) >> 11;
+                            g = (val & 0x07E0) >> 5;
+                            r = val & 0x001F;
+                        }
+                        data[pixelIndex] = (r * 255) / 31;
+                        data[pixelIndex + 1] = (g * 255) / 63;
+                        data[pixelIndex + 2] = (b * 255) / 31;
+                        data[pixelIndex + 3] = 255;
+                    }
+                } else if (mode === 'palette_rgb888' || mode === 'palette_bgr888') {
+                    pIdx += colorIdx * 3;
+                    if (pIdx + 2 < romData.length) {
+                        if (mode === 'palette_rgb888') {
+                            data[pixelIndex] = romData[pIdx];
+                            data[pixelIndex + 1] = romData[pIdx + 1];
+                            data[pixelIndex + 2] = romData[pIdx + 2];
+                        } else {
+                            data[pixelIndex] = romData[pIdx + 2];
+                            data[pixelIndex + 1] = romData[pIdx + 1];
+                            data[pixelIndex + 2] = romData[pIdx];
+                        }
+                        data[pixelIndex + 3] = 255;
+                    }
+                }
+            } 
+            else if (mode === 'gray') {
+                const color = getByte(romIndex);
+                data[pixelIndex] = color;     
+                data[pixelIndex + 1] = color; 
+                data[pixelIndex + 2] = color; 
+                data[pixelIndex + 3] = 255;   
+                romIndex++;
+            }
+            else if (mode === 'rgb332') {
+                const color = getByte(romIndex);
+                const r = (color & 0xE0) >> 5;
+                const g = (color & 0x1C) >> 2;
+                const b = (color & 0x03);
+                data[pixelIndex] = (r * 255) / 7;     
+                data[pixelIndex + 1] = (g * 255) / 7; 
+                data[pixelIndex + 2] = (b * 255) / 3; 
+                data[pixelIndex + 3] = 255;   
+                romIndex++;
+            }
+            else if (mode === 'rgb565') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = getByte(romIndex) | (getByte(romIndex + 1) << 8);
+                const r = (val & 0xF800) >> 11;
+                const g = (val & 0x07E0) >> 5;
+                const b = val & 0x001F;
+                data[pixelIndex] = (r * 255) / 31;     
+                data[pixelIndex + 1] = (g * 255) / 63; 
+                data[pixelIndex + 2] = (b * 255) / 31; 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 2;
+            } 
+            else if (mode === 'rgb565_rev') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = (getByte(romIndex) << 8) | getByte(romIndex + 1);
+                const r = (val & 0xF800) >> 11;
+                const g = (val & 0x07E0) >> 5;
+                const b = val & 0x001F;
+                data[pixelIndex] = (r * 255) / 31;     
+                data[pixelIndex + 1] = (g * 255) / 63; 
+                data[pixelIndex + 2] = (b * 255) / 31; 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 2;
+            }
+            else if (mode === 'bgr565') {
+                if (romIndex + 1 >= romData.length) break;
+                const val = getByte(romIndex) | (getByte(romIndex + 1) << 8);
+                const b = (val & 0xF800) >> 11;
+                const g = (val & 0x07E0) >> 5;
+                const r = val & 0x001F;
+                data[pixelIndex] = (r * 255) / 31;     
+                data[pixelIndex + 1] = (g * 255) / 63; 
+                data[pixelIndex + 2] = (b * 255) / 31; 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 2;
+            } 
+            else if (mode === 'rgb888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex);         
+                data[pixelIndex + 1] = getByte(romIndex + 1); 
+                data[pixelIndex + 2] = getByte(romIndex + 2); 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            } 
+            else if (mode === 'bgr888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex + 2);     
+                data[pixelIndex + 1] = getByte(romIndex + 1); 
+                data[pixelIndex + 2] = getByte(romIndex);     
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            }
+            else if (mode === 'grb888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex + 1);     
+                data[pixelIndex + 1] = getByte(romIndex);     
+                data[pixelIndex + 2] = getByte(romIndex + 2); 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            } 
+            else if (mode === 'gbr888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex + 2);     
+                data[pixelIndex + 1] = getByte(romIndex);     
+                data[pixelIndex + 2] = getByte(romIndex + 1); 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            } 
+            else if (mode === 'brg888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex + 1);     
+                data[pixelIndex + 1] = getByte(romIndex + 2); 
+                data[pixelIndex + 2] = getByte(romIndex);     
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            } 
+            else if (mode === 'rbg888') {
+                if (romIndex + 2 >= romData.length) break;
+                data[pixelIndex] = getByte(romIndex);         
+                data[pixelIndex + 1] = getByte(romIndex + 2); 
+                data[pixelIndex + 2] = getByte(romIndex + 1); 
+                data[pixelIndex + 3] = 255;   
+                romIndex += 3;
+            } 
+            else if (mode === 'yuv888') {
+                if (romIndex + 2 >= romData.length) break;
+                let y = getByte(romIndex);
+                let u = getByte(romIndex + 1) - 128;
+                let v = getByte(romIndex + 2) - 128;
+                data[pixelIndex] = clamp(y + 1.402 * v);
+                data[pixelIndex + 1] = clamp(y - 0.344 * u - 0.714 * v);
+                data[pixelIndex + 2] = clamp(y + 1.772 * u);
+                data[pixelIndex + 3] = 255;
+                romIndex += 3;
+            }
+            else if (mode === 'yuv') {
+                let blockIndex = Math.floor(i / 2) * 4; 
+                let offsetBase = offset + blockIndex;
+                if (offsetBase + 3 >= romData.length) break;
+                let y = (i % 2 === 0) ? getByte(offsetBase) : getByte(offsetBase + 2);
+                let u = getByte(offsetBase + 1) - 128;
+                let v = getByte(offsetBase + 3) - 128;
+                data[pixelIndex] = clamp(y + 1.402 * v);
+                data[pixelIndex + 1] = clamp(y - 0.344 * u - 0.714 * v);
+                data[pixelIndex + 2] = clamp(y + 1.772 * u);
+                data[pixelIndex + 3] = 255;
+                romIndex += 2; 
+            }
+            else if (mode === 'uyvy') {
+                let blockIndex = Math.floor(i / 2) * 4; 
+                let offsetBase = offset + blockIndex;
+                if (offsetBase + 3 >= romData.length) break;
+                let u = getByte(offsetBase) - 128;
+                let y = (i % 2 === 0) ? getByte(offsetBase + 1) : getByte(offsetBase + 3);
+                let v = getByte(offsetBase + 2) - 128;
+                data[pixelIndex] = clamp(y + 1.402 * v);
+                data[pixelIndex + 1] = clamp(y - 0.344 * u - 0.714 * v);
+                data[pixelIndex + 2] = clamp(y + 1.772 * u);
+                data[pixelIndex + 3] = 255;
+                romIndex += 2; 
+            }
+            else if (mode === 'vyuy') {
+                let blockIndex = Math.floor(i / 2) * 4; 
+                let offsetBase = offset + blockIndex;
+                if (offsetBase + 3 >= romData.length) break;
+                let v = getByte(offsetBase) - 128;
+                let y = (i % 2 === 0) ? getByte(offsetBase + 1) : getByte(offsetBase + 3);
+                let u = getByte(offsetBase + 2) - 128;
+                data[pixelIndex] = clamp(y + 1.402 * v);
+                data[pixelIndex + 1] = clamp(y - 0.344 * u - 0.714 * v);
+                data[pixelIndex + 2] = clamp(y + 1.772 * u);
+                data[pixelIndex + 3] = 255;
+                romIndex += 2; 
+            } 
+            else if (mode === 'yvyu') {
+                let blockIndex = Math.floor(i / 2) * 4; 
+                let offsetBase = offset + blockIndex;
+                if (offsetBase + 3 >= romData.length) break;
+                let y = (i % 2 === 0) ? getByte(offsetBase) : getByte(offsetBase + 2);
+                let v = getByte(offsetBase + 1) - 128;
+                let u = getByte(offsetBase + 3) - 128;
+                data[pixelIndex] = clamp(y + 1.402 * v);
+                data[pixelIndex + 1] = clamp(y - 0.344 * u - 0.714 * v);
+                data[pixelIndex + 2] = clamp(y + 1.772 * u);
+                data[pixelIndex + 3] = 255;
+                romIndex += 2; 
+            }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+
+        if (smartStop.checked && pixelsDrawn > width) {
+            let match = 0;
+            let total = 0;
+            let maxCheck = Math.min(5000, pixelsDrawn - 1);
+            for(let i = 0; i < maxCheck; i++) {
+                if ((i + 1) % width === 0) continue;
+                let idx = i * 4;
+                let diff = Math.abs(data[idx] - data[idx+4]) + 
+                           Math.abs(data[idx+1] - data[idx+5]) + 
+                           Math.abs(data[idx+2] - data[idx+6]);
+                if (diff < 15) match++;
+                total++;
+            }
+            currentSmartScore = total > 0 ? (match / total) * 100 : 0;
+            scanScoreDisplay.textContent = 'スコア: ' + currentSmartScore.toFixed(1) + '%';
+        } else {
+            currentSmartScore = 0;
+            scanScoreDisplay.textContent = '';
+        }
+    }
+</script>
+</body>
+</html>
