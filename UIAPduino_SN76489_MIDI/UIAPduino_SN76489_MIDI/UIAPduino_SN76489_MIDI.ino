@@ -1,13 +1,14 @@
 /*
  * ファイル名      : UIAPduino_SN76489_MIDI.ino
- * バージョン      : 0.20
+ * バージョン      : 0.21
  * 日付            : 2026-07-29
- * 説明            : SN76489制御用プログラム。リアルタイムエンベロープ調整＋CH4自動ドラムキット化。
+ * 説明            : SN76489制御用プログラム。CH1-3にSustain状態（ADS-R）を追加しロングトーンに対応。ノートOFF時のリリース処理を滑らかに改善。
  * 変更履歴        :
  * - V0.17: デバッグ用エコーバック送信の削除（処理落ち・UIフリーズ対策）。
  * - V0.18: 文字列バッファと解読関数を廃止。1文字ごとのステートマシン解析方式に変更。
  * - V0.19: 'E'コマンド(E,ch,attack,decay)を追加し、各チャンネルごとのAD(アタック・ディケイ)を独立設定可能に。
  * - V0.20: CH4(ノイズ)受信時に、MIDIノート番号から楽器(Kick/Snare/HH等)を自動判別し、ノイズ種類と減衰を動的に切り替える自動ドラムキット機能を実装。
+ * - V0.21: 音階チャンネル(CH1-3)にSustain状態を追加しロングトーンに対応。ノートOFF時のRelease処理にdecayRateを反映させ自然な消え方に改善。
  */
 
 #include <Arduino.h>
@@ -24,7 +25,7 @@ const int PIN_D6  = PC7;
 const int PIN_D7  = PA1; 
 const int PIN_CLK = PC4;
 
-enum EnvState { ENV_IDLE = 0, ENV_ATTACK, ENV_DECAY, ENV_RELEASE };
+enum EnvState { ENV_IDLE = 0, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE };
 
 struct Channel {
   uint8_t note, baseVol, lastOutVol, envType, noiseMode;
@@ -77,7 +78,7 @@ void setup() {
   dummy = USART1->DATAR;
   (void)dummy;
   
-  Serial.write('V'); Serial.write('2'); Serial.write('0'); // 起動確認
+  Serial.write('V'); Serial.write('2'); Serial.write('1'); // 起動確認 (V0.21)
 
   // 3. 周辺回路設定
   setupClock4MHz();
@@ -295,25 +296,49 @@ void updateEnvelopes() {
           break;
           
         case ENV_DECAY: {
-          int16_t d = channels[i].decayRate; // Eコマンドで受信した値を直接適用
-          if (d > 0) {
-            if (channels[i].currentEnvVol <= d) {
+          int16_t d = channels[i].decayRate;
+          if (i == 3) {
+            if (d > 0) {
+              if (channels[i].currentEnvVol <= d) {
+                channels[i].currentEnvVol = 0;
+                channels[i].state = ENV_IDLE;
+              } else {
+                channels[i].currentEnvVol -= d;
+              }
+            } else {
               channels[i].currentEnvVol = 0;
               channels[i].state = ENV_IDLE;
+            }
+          } else {
+            if (d > 0) {
+              if (channels[i].currentEnvVol <= d || channels[i].currentEnvVol <= 80) {
+                channels[i].currentEnvVol = 80;
+                channels[i].state = ENV_SUSTAIN;
+              } else {
+                channels[i].currentEnvVol -= d;
+              }
             } else {
-              channels[i].currentEnvVol -= d;
+              channels[i].state = ENV_SUSTAIN;
             }
           }
           break;
         }
-        case ENV_RELEASE:
-          if (channels[i].currentEnvVol <= 25) {
+        
+        case ENV_SUSTAIN:
+          break;
+          
+        case ENV_RELEASE: {
+          // decayRateをリリース速度にも連動させ、ツマミで余韻の切れ味を調整できるように変更
+          int16_t relRate = channels[i].decayRate > 0 ? channels[i].decayRate : 5;
+          if (channels[i].currentEnvVol <= relRate) {
             channels[i].currentEnvVol = 0;
             channels[i].state = ENV_IDLE;
           } else {
-            channels[i].currentEnvVol -= 25;
+            channels[i].currentEnvVol -= relRate;
           }
           break;
+        }
+        
         case ENV_IDLE:
           break;
       }
