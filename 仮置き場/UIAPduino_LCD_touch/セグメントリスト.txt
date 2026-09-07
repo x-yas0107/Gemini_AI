@@ -1,0 +1,11 @@
+
+
+a=PC1+PC5
+b=PC1+PC6
+c=PA2+PC6
+d=PC2+PC5
+e=PA2+PC4
+f=PC1+PC4
+g=PA2+PC5
+h=PC2+PC6
+

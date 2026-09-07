@@ -1,0 +1,423 @@
+/*
+ * Version: 0.20
+ * 変更履歴 (Change History):
+ * - v0.00: 初期コード (LCD slider)
+ * - v0.01: 起動時の基準値取得、非タッチ判定、ブロッキング遅延排除、状態変化時のみシリアル出力化
+ * - v0.02: ガラス越し用超高感度化(32回サンプリングの合計値を使用)。定期出力機能を追加
+ * - v0.03: ガラス越しの実測値に基づきしきい値(THRESH=50, TOUCH_MIN=150)を最適化。0〜100%のスライダー位置算出ロジックを追加
+ * - v0.04: 実測データに基づきTOUCH_MINを180へ調整。ガラスの静電容量拡散(40-60%)を0-100%に引き伸ばすマッピング処理を追加
+ * - v0.05: 実際の生の比率をサンプリングするため、マッピング処理(map, constrain)を一時解除
+ * - v0.06: サンプリング結果に基づきTOUCH_MINを140に最適化。生の比率(30-60%)を0-100%へマッピングする処理を正式実装
+ * - v0.07: TIM1 CH3 により PC3 へスライダー位置(0〜100%)をPWM出力。NONE時はデューティ0
+ * - v0.08: 実測アイドル(〜30)と取りこぼし(136)に合わせ TOUCH_MIN を140から90へ変更
+ * - v0.10: 2ch差動を廃止。COMをA0(PA2)1本で測定。起動時ベース→左端→右端の3点校正。LED 1/2/3回点灯。校正2点を0〜100%へ変換しPC3 PWM
+ * - v0.11: 校正に400msの保持と400msの離間を追加。離した直後の右端誤認を防止。PWMは左端=0% / 右端=100%
+ * - v0.12: 校正値の確定方法を変更。タッチ開始から200〜400msの区間で読み取った値を平均し、保持400ms経過時点(まだ触れている状態)で
+ *          左端/右端の値を一発確定するよう変更。確定後は値を更新しない。早期離脱(400ms未満)時はそのタッチ待ち状態へ即座に戻る
+ * - v0.13: RUN中のPWM出力(モニターLED)のチラつき対策。直近16回分のraw値の移動平均(リングバッファ)を追加し、
+ *          その平均値からsliderPosを算出してPWMへ反映。タッチが離れた時点でバッファをリセット
+ * - v0.14: センシング方式を根本的に変更。従来は「ピンをLOWで放電→入力(外付け1MΩプルアップ)→デジタルHIGH判定になるまでの
+ *          時間をループでカウント」だったが、cnlohr氏のch32v003_3digit_lcd_usb(firmware-touch-base)を参考に、
+ *          「ピンをLOWで放電→入力(内蔵プルアップ)に切替→充電が始まった直後にADCで電圧を1回だけ直接サンプリング」する
+ *          方式へ変更。外付け1MΩプルアップ抵抗は不要(内蔵プルアップを使用)。32回オーバーサンプリングして合計する点は
+ *          従来通り。校正(calState)・平滑化(smooth)ロジックは変更なし、raw値の取得方法のみ置き換え。
+ * - v0.15: cnlohr氏の方式に基づき、PA2(COM1)に加えPC1, PC2, PC4, PC5, PC6 を同時に放電・内蔵プルアップ解放する連動ロジックを
+ *          adcSampleTouchに実装。他のセグメントを一緒に動かすことで浮遊シールドを消し、ガラス越しでの感度低下を防ぐ。
+ * - v0.16: ADC方式への変更に伴う生データの増減方向逆転(タッチ時電圧降下)に対応。isTouchとシリアル出力の差分計算を baseA0 - raw に修正
+ * - v0.17: 非タッチ時のノイズ(d=120前後)による誤検知を防ぐため、TOUCH_MINを90から150へ調整
+ * - v0.18: rawToPercentの計算を「ADCの生値」から「ベースからの変化量(d)」に基づくロジックへ修正し、PWM点灯の逆転現象を解消
+ * - v0.19: 左右2点校正を廃止し、1点のみの最大値(感圧上限)校正へ完全簡略化。取得したベース値(0%)とMax値(100%)の変動幅からPWM出力を行う仕様へ変更。
+ * - v0.20: LCD表示ロジック(UpdateLCD, WaitAndDriveLCD)を統合。0.5秒タイマーで0〜Fの仮フォントを交流駆動(DitherIO相当)で全桁出力。待機中もLCDの点灯を維持
+ * 2026,09,07
+ */
+#include <Arduino.h>
+
+const uint32_t CH_OUT   = 0x1; // 出力 push-pull
+const uint32_t CH_IN_FL = 0x4; // 入力 フローティング(LCD駆動非アクティブ時用)
+const uint32_t CH_IN_PU = 0x8; // 入力 プルアップ/プルダウン(方向はODRビットで決定)
+
+const int TOUCH_MIN = 150; 
+const int SENSE_BIT = 2;   // PA2
+const int ADC_CHANNEL = 0; // PA2 = ADC1チャンネル0
+const int ADC_SAMPLE_TIME_CODE = 1; 
+
+const unsigned long STABLE_MS = 400;
+const unsigned long WIN_START_MS = 200;
+const int SMOOTH_N = 16;
+
+int baseA0 = 0;
+int maxVal = 0;
+int calState = 0;
+unsigned long phaseStart = 0;
+long calSum = 0;
+int calCount = 0;
+
+int smoothBuf[SMOOTH_N];
+int smoothIdx = 0;
+int smoothCount = 0;
+long smoothSum = 0;
+
+// LCD表示用タイマー変数
+int dispNum = 0;
+unsigned long lastDispMs = 0;
+
+// 0〜Fの仮フォントデータ (3COM x 3SEG = 9bit)
+// bit0-2: COM0(PC1) - SEG0,1,2
+// bit3-5: COM1(PA2) - SEG0,1,2
+// bit6-8: COM2(PC2) - SEG0,1,2
+const uint16_t font3x3[16] = {
+  0b111101111, // 0 (外周点灯想定)
+  0b001001001, // 1 (右縦線想定)
+  0b101110110, // 2 
+  0b101011111, // 3 
+  0b011011001, // 4 
+  0b110011101, // 5 
+  0b110111111, // 6 
+  0b101001001, // 7 
+  0b111111111, // 8 (全点灯)
+  0b111011111, // 9 
+  0b111111011, // A 
+  0b011111111, // B 
+  0b110110110, // C 
+  0b001111111, // D 
+  0b110110111, // E 
+  0b110110011  // F 
+};
+
+void setupHardwareUart() {
+  RCC->APB2PCENR |= (RCC_APB2Periph_GPIOD | RCC_APB2Periph_AFIO | RCC_APB2Periph_USART1);
+  GPIOD->CFGLR &= ~((0xFu << (5 * 4)) | (0xFu << (6 * 4)));
+  GPIOD->CFGLR |=  ((0xBu << (5 * 4)) | (0x8u << (6 * 4)));
+  GPIOD->OUTDR |= (1 << 6);
+  AFIO->PCFR1 &= ~(1 << 2);
+  USART1->CTLR1 &= ~USART_CTLR1_UE;
+  USART1->BRR = 0x1A1;
+  USART1->CTLR1 = USART_CTLR1_UE | USART_CTLR1_TE | USART_CTLR1_RE;
+}
+
+void uartSendChar(char c) {
+  while (!(USART1->STATR & (1 << 7)));
+  USART1->DATAR = c;
+}
+
+void uartSendString(const char* str) {
+  while (*str) uartSendChar(*str++);
+}
+
+void uartSendInt(int v) {
+  if (v < 0) {
+    uartSendChar('-');
+    v = -v;
+  }
+  char buf[12];
+  uint8_t i = 0;
+  if (v == 0) {
+    uartSendChar('0');
+    return;
+  }
+  while (v > 0) {
+    buf[i++] = '0' + (v % 10);
+    v /= 10;
+  }
+  while (i > 0) uartSendChar(buf[--i]);
+}
+
+void setupPwmPc3() {
+  RCC->APB2PCENR |= RCC_APB2Periph_TIM1;
+  GPIOC->CFGLR &= ~(0xFu << (3 * 4));
+  GPIOC->CFGLR |=  (0xBu << (3 * 4));
+  TIM1->CTLR1 = 0;
+  TIM1->PSC = 47;
+  TIM1->ATRLR = 999;
+  TIM1->CHCTLR2 = 0;
+  TIM1->CHCTLR2 = (6u << 4) | (1u << 3);
+  TIM1->CCER |= (1u << 8);
+  TIM1->CH3CVR = 0;
+  TIM1->BDTR |= (1u << 15);
+  TIM1->CTLR1 |= 1u;
+}
+
+void setPwmPercent(int percent) {
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  TIM1->CH3CVR = (uint16_t)(((uint32_t)(TIM1->ATRLR + 1) * (uint32_t)percent) / 100u);
+}
+
+void setupAdcTouch() {
+  RCC->APB2PCENR |= RCC_APB2Periph_ADC1;
+  ADC1->RSQR3 = ADC_CHANNEL;
+  ADC1->SAMPTR2 = ((uint32_t)ADC_SAMPLE_TIME_CODE) << (3 * ADC_CHANNEL);
+  ADC1->CTLR2 = ADC_ADON;
+  delay(2);
+}
+
+// 液晶を交流駆動(1/2バイアス相当)で点灯させる処理 (実行時間: 約3ms)
+void UpdateLCD(int num) {
+  uint16_t pat = font3x3[num & 0x0F];
+  
+  for(int phase = 0; phase < 2; phase++) { // 正相と逆相を切り替える
+    for(int c = 0; c < 3; c++) {           // 各COM(0,1,2)の処理
+      int segBits = (pat >> (c * 3)) & 0x07;
+      
+      // 1. 全COMピンを一旦Floating入力にする (PA2, PC1, PC2)
+      GPIOA->CFGLR = (GPIOA->CFGLR & ~(0xFu << (2 * 4))) | (CH_IN_FL << (2 * 4));
+      GPIOC->CFGLR = (GPIOC->CFGLR & ~((0xFu << (1 * 4)) | (0xFu << (2 * 4)))) 
+                   | ((CH_IN_FL << (1 * 4)) | (CH_IN_FL << (2 * 4)));
+      
+      // 2. SEG0,1,2(PC4, PC5, PC6)を出力(Push-Pull)にするためのベース値
+      uint32_t c_clr = GPIOC->CFGLR & ~((0xFu << (4 * 4)) | (0xFu << (5 * 4)) | (0xFu << (6 * 4)));
+      uint32_t c_out = c_clr | (CH_OUT << (4 * 4)) | (CH_OUT << (5 * 4)) | (CH_OUT << (6 * 4));
+      
+      // 3. アクティブなCOMピンだけを出力(Push-Pull)にする
+      if (c == 0) { // COM0 = PC1
+        GPIOC->CFGLR = c_out | (CH_OUT << (1 * 4));
+      } else if (c == 1) { // COM1 = PA2
+        GPIOC->CFGLR = c_out;
+        GPIOA->CFGLR = (GPIOA->CFGLR & ~(0xFu << (2 * 4))) | (CH_OUT << (2 * 4));
+      } else { // COM2 = PC2
+        GPIOC->CFGLR = c_out | (CH_OUT << (2 * 4));
+      }
+      
+      // 4. 出力レベルの決定 (phase0=LOW, phase1=HIGH)
+      int comState = phase; 
+      
+      if (c == 0) { if (comState) GPIOC->BSHR = (1 << 1); else GPIOC->BCR = (1 << 1); }
+      if (c == 1) { if (comState) GPIOA->BSHR = (1 << 2); else GPIOA->BCR = (1 << 2); }
+      if (c == 2) { if (comState) GPIOC->BSHR = (1 << 2); else GPIOC->BCR = (1 << 2); }
+      
+      // SEGの出力設定 (非アクティブなSEGはCOMと同電位にしてVLCD=0Vとする)
+      uint32_t bshrC = 0, bcrC = 0;
+      for(int s = 0; s < 3; s++) {
+        int isActive = (segBits & (1 << s)) ? 1 : 0;
+        int segState = isActive ? !comState : comState;
+        if (segState) bshrC |= (1 << (4 + s));
+        else bcrC |= (1 << (4 + s));
+      }
+      GPIOC->BSHR = bshrC;
+      GPIOC->BCR = bcrC;
+      
+      delayMicroseconds(500); // 駆動保持
+    }
+  }
+  
+  // 終了後、すべてのピンをFloatingにしてDC印加を防ぐ
+  GPIOA->CFGLR = (GPIOA->CFGLR & ~(0xFu << (2 * 4))) | (CH_IN_FL << (2 * 4));
+  GPIOC->CFGLR = (GPIOC->CFGLR & ~((0xFu << (1 * 4)) | (0xFu << (2 * 4)) | (0xFu << (4 * 4)) | (0xFu << (5 * 4)) | (0xFu << (6 * 4)))) 
+               | ((CH_IN_FL << (1 * 4)) | (CH_IN_FL << (2 * 4)) | (CH_IN_FL << (4 * 4)) | (CH_IN_FL << (5 * 4)) | (CH_IN_FL << (6 * 4)));
+}
+
+// delay()の代わりにLCDを駆動し続けながら待機する関数
+void WaitAndDriveLCD(int ms) {
+  unsigned long start = millis();
+  while (millis() - start < (unsigned long)ms) {
+    unsigned long now = millis();
+    if (now - lastDispMs >= 500) {
+      dispNum = (dispNum + 1) % 16;
+      lastDispMs = now;
+    }
+    UpdateLCD(dispNum);
+  }
+}
+
+void blinkLed(int times) {
+  for (int i = 0; i < times; i++) {
+    GPIOC->BSHR = 1;
+    WaitAndDriveLCD(120);
+    GPIOC->BCR = 1;
+    WaitAndDriveLCD(120);
+  }
+}
+
+int adcSampleTouch(int bit) {
+  uint32_t sh = bit * 4;
+  
+  GPIOA->CFGLR &= ~(0xFu << sh);
+  GPIOA->CFGLR |=  (CH_OUT << sh);
+  GPIOA->BCR = (1 << bit);
+  
+  GPIOC->CFGLR &= ~((0xFu << 4) | (0xFu << 8) | (0xFu << 16) | (0xFu << 20) | (0xFu << 24));
+  GPIOC->CFGLR |=  ((CH_OUT << 4) | (CH_OUT << 8) | (CH_OUT << 16) | (CH_OUT << 20) | (CH_OUT << 24));
+  GPIOC->BCR = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 6);
+  
+  delayMicroseconds(80);
+  
+  GPIOA->CFGLR &= ~(0xFu << sh);
+  GPIOA->CFGLR |=  (CH_IN_PU << sh);
+  GPIOA->OUTDR |= (1 << bit);
+  
+  GPIOC->CFGLR &= ~((0xFu << 4) | (0xFu << 8) | (0xFu << 16) | (0xFu << 20) | (0xFu << 24));
+  GPIOC->CFGLR |=  ((CH_IN_PU << 4) | (CH_IN_PU << 8) | (CH_IN_PU << 16) | (CH_IN_PU << 20) | (CH_IN_PU << 24));
+  GPIOC->OUTDR |= (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 6);
+  
+  ADC1->CTLR2 = ADC_SWSTART | ADC_ADON | ADC_EXTSEL;
+  while (!(ADC1->STATR & ADC_EOC));
+  return ADC1->RDATAR;
+}
+
+int readCap(int bit) {
+  long s = 0;
+  for (int i = 0; i < 32; i++) s += adcSampleTouch(bit);
+  return (int)s;
+}
+
+int isTouch(int raw) {
+  int d = baseA0 - raw;
+  if (d < 0) d = 0;
+  return (d >= TOUCH_MIN) ? 1 : 0;
+}
+
+int rawToPercent(int raw) {
+  int d_raw = baseA0 - raw;
+  int d_max = baseA0 - maxVal;
+  
+  if (d_max <= 0) return 100;
+  
+  long p = ((long)d_raw * 100L) / (long)d_max;
+  if (p < 0) p = 0;
+  if (p > 100) p = 100;
+  return (int)p;
+}
+
+void smoothReset() {
+  smoothIdx = 0;
+  smoothCount = 0;
+  smoothSum = 0;
+}
+
+int smoothPush(int raw) {
+  if (smoothCount < SMOOTH_N) {
+    smoothBuf[smoothIdx] = raw;
+    smoothSum += raw;
+    smoothCount++;
+  } else {
+    smoothSum -= smoothBuf[smoothIdx];
+    smoothSum += raw;
+    smoothBuf[smoothIdx] = raw;
+  }
+  smoothIdx = (smoothIdx + 1) % SMOOTH_N;
+  return (int)(smoothSum / smoothCount);
+}
+
+void setup() {
+  setupHardwareUart();
+  RCC->APB2PCENR |= (RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC);
+  GPIOC->CFGLR &= ~0xFu;
+  GPIOC->CFGLR |= CH_OUT;
+  setupPwmPc3();
+  setPwmPercent(0);
+  setupAdcTouch();
+  
+  uartSendString("=== LCD slider Ver0.20 (ADC touch & LCD) ===\r\n");
+  uartSendString("Calibrating OFF...\r\n");
+  WaitAndDriveLCD(400);
+  
+  for (int i = 0; i < 5; i++) {
+    readCap(SENSE_BIT);
+    WaitAndDriveLCD(10);
+  }
+  
+  baseA0 = readCap(SENSE_BIT);
+  uartSendString("Base A0=");
+  uartSendInt(baseA0);
+  uartSendString("\r\n");
+  
+  blinkLed(1);
+  calState = 1;
+  uartSendString("Touch MAX\r\n");
+}
+
+void loop() {
+  int raw = readCap(SENSE_BIT);
+  unsigned long now = millis();
+  
+  if (calState == 1) {
+    if (isTouch(raw)) {
+      phaseStart = now;
+      calSum = 0;
+      calCount = 0;
+      calState = 2;
+    }
+    WaitAndDriveLCD(10);
+    return;
+  }
+  
+  if (calState == 2) {
+    if (!isTouch(raw)) {
+      calState = 1;
+      WaitAndDriveLCD(10);
+      return;
+    }
+    unsigned long elapsed = now - phaseStart;
+    if (elapsed >= WIN_START_MS && elapsed <= STABLE_MS) {
+      calSum += raw;
+      calCount++;
+    }
+    if (elapsed < STABLE_MS) {
+      WaitAndDriveLCD(10);
+      return;
+    }
+    maxVal = (calCount > 0) ? (int)(calSum / calCount) : raw;
+    uartSendString("MAX=");
+    uartSendInt(maxVal);
+    uartSendString("\r\n");
+    blinkLed(2);
+    phaseStart = millis();
+    calState = 3;
+    uartSendString("Release wait\r\n");
+    WaitAndDriveLCD(10);
+    return;
+  }
+  
+  if (calState == 3) {
+    if (isTouch(raw)) {
+      phaseStart = now;
+    } else if ((now - phaseStart) >= STABLE_MS) {
+      calState = 4;
+      smoothReset();
+      uartSendString("RUN\r\n");
+    }
+    WaitAndDriveLCD(10);
+    return;
+  }
+  
+  int currentState = 0;
+  const char* pos = "NONE ";
+  int sliderPos = 0;
+  
+  if (!isTouch(raw)) {
+    currentState = 0;
+    pos = "NONE ";
+    smoothReset();
+    GPIOC->BCR = 1;
+    setPwmPercent(0);
+  } else {
+    currentState = 1;
+    pos = "TOUCH";
+    int avgRaw = smoothPush(raw);
+    sliderPos = rawToPercent(avgRaw);
+    GPIOC->BSHR = 1;
+    setPwmPercent(sliderPos);
+  }
+  
+  static int printTimer = 0;
+  printTimer++;
+  if (printTimer >= 50) {
+    uartSendString("raw=");
+    uartSendInt(raw);
+    uartSendString(" d=");
+    uartSendInt(baseA0 - raw);
+    uartSendChar(' ');
+    uartSendString(pos);
+    
+    if (currentState != 0) {
+      uartSendString(" POS=");
+      uartSendInt(sliderPos);
+      uartSendString("%");
+    }
+    
+    uartSendString("\r\n");
+    printTimer = 0;
+  }
+  
+  WaitAndDriveLCD(10);
+}
