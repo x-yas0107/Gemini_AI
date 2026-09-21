@@ -1,54 +1,236 @@
-Change History:
-- v0.01: Initial baseline created. Implemented basic screen layout, 2.54mm grid, 2-layer support, wiring functionality, component placement (resistors, capacitors, DIP-ICs), snap, zoom, and rotation features.
-- v0.02: Created a component library based on KiCad standard dimensions (metric/mm).
-- v0.03: Fixed canvas size to A4 landscape (297x210mm). Added automatic drawing for the drawing frame and the title block in the bottom-right corner.
-- v0.04: Added zoom in/out (+/-) buttons. Implemented Undo and Redo buttons.
-- v0.05: Changed the reference coordinate (0,0) for all components to Pin 1. Standardized the initial orientation of DIP-ICs to horizontal.
-- v0.06: Implemented an automatic design demo for a 555 timer LED blinking circuit (resetting the workspace to blank in this version).
-- v0.07: Added an "Eraser" tool; implemented functionality to delete individual components or traces upon clicking.
-- v0.08: Removed the toolbar and consolidated operations into a right-click context menu. Added a status display to the top-left of the screen.
-- v0.09: Implemented continuous wiring (polyline) functionality: start/continue wiring by clicking, and complete the trace by right-clicking or pressing the Esc key.
-- v0.10: Added corner shape options (right-angle, 45-degree chamfer, rounded) and size specification based on the 2.54mm grid to wiring mode.
-- v0.10.1: [BugFix] Fixed issues where rounded corners were rendering as straight lines and chamfers were not applying correctly during vertical movement. - v0.11: Added a feature to toggle the bend direction (vertical-priority vs. horizontal-priority) of L-shaped traces in real-time by holding the Shift key while routing.
-- v0.12: Added "Free Curve" to corner shapes. Implemented smooth, continuous curve rendering using Catmull-Rom splines based on specified control points.
-- v0.13: Added a function to switch to a finer grid (1.27mm) and implemented a feature to completely disable snapping (free-coordinate mode) while holding the Alt key.
-- v0.14: [BugFix] Changed the Free Curve algorithm to a Centripetal Catmull-Rom spline, eliminating loops and collapsing artifacts during sharp turns.
-- v0.15: [BugFix] Improved the Free Curve algorithm. Added virtual coordinate calculation for endpoints and an overshoot limiter, completely eliminating erratic line behavior and loops during sharp turns.
-- v0.16: Added the "Parallel Trace" tool. Implemented functionality to select an existing trace and duplicate it via parallel translation. Also improved hit detection for line segment selection.
-- v0.17: [Feature] Radically improved the Parallel Trace (offset) function. Implemented true offset calculation using normal vectors instead of simple parallel translation, and added a feature for automatic, smooth connection (S-curve routing) to specified start and end points (such as pads).
-- v0.18: [BugFix] Fixed an issue where parallel trace spacing was inconsistent. Changed the offset distance to the perpendicular distance along the normal vector. Implemented dense sampling of the curve used for rendering and offset each point by a fixed distance along its tangent/normal. Start and end pads are now treated as independent connection points rather than being mixed into the parallel section's control points. Converted output to polylines to prevent spacing distortion during subsequent offset operations.
-- v0.19: [BugFix] Updated Parallel Trace to perform true offsetting on a per-segment basis. Outer corners use arc joins with a radius equal to the spacing; inner corners use line segment intersections (with miter limits). Self-intersecting loops are removed. Start and end connections are separated from the parallel sections as `startCap`/`endCap` to prevent connection lines from merging with the reference path during re-offsetting.
-- v0.20: [BugFix] Changed parallel tracing logic from "global offset → trim result" to fix the issue where the right end would straighten out. Vertices on the inner side with a curvature radius ≤ spacing are skipped, and the peak is cut at the intersection of the offset lines on both sides. Pad connections consist only of short caps extending from the trimmed ends.
-- v0.21: [BugFix] Attempted arc-recognition-based offsetting, but discarded it because it picked up minute spline irregularities, causing failures on the inner side.
-- v0.22: [BugFix] Reverted to the equidistant offset method from v0.20; added arc-length resampling and smoothing (moving average) prior to offsetting to suppress the amplification of hand tremors. Inner corners with insufficient radius are cut at the intersection.
-- v0.23: [BugFix] Fixed the issue where the right end would straighten out. Preserved the curve's tail during end-point trimming and changed the pad connection to a quadratic curve aligned with the terminal tangent. Retained parallel tracing as an auxiliary function.
-- v0.24: [BugFix] Fixed the issue where the end of the parallel trace would deviate significantly from the grid. Aligned start and end points based on arc-length ratios along the original line, and snapped the body ends to the grid.
-- v0.25: [Feature] Standard routing uses free straight lines (including diagonals) between clicks. Corner processing (right-angle, 45-degree, or rounded) is applied only while the Space key is held down. The Space key function for component rotation applies only during placement or movement.
-- v0.26: [Feature] Added Save and Load functions to the right-click menu. Implemented local file I/O using the JSON format. - v0.27: [Feature] Added a "Load Custom Part" function to import user-defined custom parts (such as SOP conversion boards) from external JSON files. Improved the system so that custom part data is automatically embedded within and restored from the board's save file (JSON).
-- v0.28: [Feature] Added support for drawing rectangular pads (SMD) and internal traces for custom parts. Added presets to the standard library for SOP8/SSOP8-to-DIP8 conversion boards (including inter-pin routing).
-- v0.29: [Feature] Added support for directly importing KiCad footprints (.kicad_mod). Implemented an S-expression parser to automatically interpret SMD/through-hole pad shapes, sizes, and angles, as well as silkscreen outlines, for import as CAD parts.
-- v0.30: [Feature] Added a function (Library Save/Load) to save custom parts (including imported KiCad parts) as separate library files and load them in bulk. Reorganized the right-click menu.
-- v0.31: [Feature] Added "1-pin land" and "via" to standard parts. Implemented a function to automatically place a via and switch layers by pressing the "V" key while routing. Moved Undo/Redo to the top of the menu.
-- v0.32: [Feature] Inverted routing colors: changed the bottom layer (solder side) to red and the top layer (component side) to blue. Added menu options to toggle the visibility (ON/OFF) of traces and silkscreen for each layer.
-- v0.33: [Feature] Added a silkscreen text placement function. Supports input, placement, movement, rotation, deletion, and saving/loading of arbitrary text. Linked to the silkscreen visibility toggle.
-- v0.34: [Feature] Enhanced text functionality. Added a font size toggle (Small, Medium, Large). Implemented a function to re-edit placed text by double-clicking it. Added a precise hit-detection algorithm specifically for text that accounts for character length and angle, improving the usability of move and delete operations.
-- v0.35: [Feature] Finalized the CAD name as "WireFlow_CAD." Revamped the drawing frame (title block) design into a professional table layout. Enabled individual editing of frame fields (TITLE, DESIGNER, DATE, REV) via double-click and added functionality to save settings as JSON.
-- v0.36: [Feature] Modified the layout of the bottom section of the drawing frame. Positioned the CAD name (WireFlow CAD) and subtitle (Intuitive Circuit Design) on the left, the date in the center, and the revision on the right.
-- v0.37: [BugFix] Fixed an issue where the thick outer border (margin frame) of the A4 sheet had disappeared; restored it as a solid, thick line (3px).
-- v0.38: [Feature] Added an "Idle (Select)" mode. Set Idle mode as the default state and enhanced the "cancel" and "return to idle" functions triggered by the Esc key. Added "Select / Idle" to the right-click menu.
-- v0.39: [Feature] Compacted the right-click menu UI (reduced font size; halved padding and margins). Organized the component placement menu into a sub-hierarchical structure: "Basic Parts," "ICs & Adapter Boards," and "Custom Parts."
-- v0.40: [Feature] Implemented a custom modal window system. Replaced standard `alert`/`prompt` dialogs with a unified, custom UI displayed in the center of the screen (featuring a dimmed background).
-- v0.41: [Feature] Converted "Resistor" and "Capacitor" placement options into sub-menus and added footprint variations based on size (e.g., axial, SMD). Implemented a class (`.scrollable-menu`) with a maximum height (220px) and an automatic scrollbar to prevent the menu from extending off-screen.
-- v0.42: [Feature] Implemented a print output function. Added support for actual-size (A4) printing, partial printing (visible area), and layer-specific output. Implemented automatic inversion to a white background with black silkscreen specifically for printing. Added a mirrored printing (horizontal flip) option. Expanded the component library to include LEDs (3mm/5mm), coils (axial/radial), and connectors (pin headers, 2–8 pins).
-- v0.43: [Feature] Added a "Mirrored Printing (Horizontal Flip)" function to the print dialog. Implemented logic to flip the Canvas output during image generation.
-- v0.44: [Feature] Added color mode selection for printing (Color / Monochrome Solid Black / Negative Inversion/White-out). Fully supports pure black/white-out output for mask creation.
-- v0.45: [Feature] Expanded the grid system to support both inch-based (2.54/1.27/0.635mm) and metric-based (1.0/0.5mm) grids. Implemented shape drawing tools (rectangle/circle; outline/fill) for creating custom pads and solid ground planes.
-- v0.46: [Feature] Revamped zooming (magnification/reduction) to use true vector zooming. Implemented zoom-to-cursor functionality and added a "smart grid" display that automatically thins out grid lines (e.g., 0.5mm grid) when zoomed out.
-- v0.47: [BugFix] Fixed a bug where inch-based (2.54mm) major grid lines were drawn alongside metric-based (1.0mm/0.5mm) grids. Changed the specification to draw independent major grid lines for metric and inch systems.
-- v0.48: [Feature] Implemented screen panning via middle-button (wheel) dragging and a "Fit to Screen" function via middle-button double-clicking. - v0.49: [Feature] Revamped the "Fit All" algorithm (triggered by double-clicking the middle mouse button) to automatically fit the actual drawing area (bounding box) rather than the entire paper size.
-- v0.50: [BugFix] Extended the detection time for the middle-mouse double-click to 600ms. Adjusted margin calculations for the "Fit All" (auto-fit) function to maximize the display area on the screen.
-- v0.51: [Feature] Drastically improved the KiCad import function. Added support for parsing slotted holes, rounded-corner pads, arcs, and text. Added a preview window (viewport).
-- v0.52: [Feature] Added a "Layer Mapping" function to the import preview screen.
-- v0.53: [BugFix] Improved the pad rendering engine to ensure pads retain their original gold color during layer mapping.
-- v0.54: [Feature] Added support for fully parsing and rendering KiCad polygon fills (`fp_poly`).
-- v0.55: [Feature] Major overhaul of the KiCad import layer mapping UI to a "target-driven" approach. WireFlow's three basic layers (Top/Bottom/S...
+# WireFlow CAD — Change History
+
+## v0.87
+- Submenu arrows (▶ / ◀) no longer overlap item labels.
+
+## v0.86
+- Once a submenu opens to the left, nested menus keep opening left.
+
+
+## v0.85
+- Mirror selected silk text and footprint text horizontally (Edit menu / Ctrl+M).
+- Right-click submenus open to the left or up when they would leave the window.
+
+## v0.84
+- Full English UI: filename, menus, dialogs, status, part names, and prompts.
+
+## v0.83
+- Paste remaps traces and shapes onto the current drawing layer (front ↔ back, silk ↔ outline).
+
+## v0.82
+- Box select (drag), single select (click), copy/paste (Ctrl+C/V), bulk move, and Delete.
+- Traces can be selected and moved.
+
+## v0.81
+- Refactored part drawing (`drawSinglePart` and related helpers). Removed unused math. About 400 lines smaller.
+
+## v0.80
+- Coordinate origin (0,0) and grid snap origin moved from the paper edge to the top-left of the drawing frame.
+- Default designer for new drawings: `@yas0107`.
+- Title-block WireFlow CAD logo enlarged.
+
+## v0.79
+- F3 toggles the top-left help overlay.
+- ABS/REL coordinates moved from the overlay to the top menu bar (right side).
+- REL appears only while drawing, on a second status row.
+
+## v0.78
+- Thin top menu bar with F1/F2 pulldowns.
+- Right-click menu grouped into Draw / Edit / View.
+- Manual CFG file export removed.
+
+## v0.77
+- Autosave/restore of settings in localStorage (grid, trace width, corners, layer visibility).
+
+## v0.76
+- Silk (white) and outline (yellow) became drawable layers, in addition to two copper layers.
+
+## v0.75
+- Metric grid: 10 mm and 5 mm.
+
+## v0.74
+- Circles are center + radius.
+- REL shows R (radius) and D (diameter) for circles, W/H for rectangles.
+
+## v0.73
+- Coordinate readout. ABS from the sheet origin; REL from the start of the current line/circle/rect, in mm.
+
+## v0.72
+- Chamfer/fillet sizes 1G–5G.
+- Actual radius = grid × G × 0.5 (on a 2.54 mm grid, 1G = R 1.27 mm).
+
+## v0.70
+- Print scale X/Y labels no longer overlap at the origin.
+
+## v0.69
+- Vertical 100 mm print scale added.
+
+## v0.68
+- Print: 100 mm scale bar and measured X/Y correction.
+
+## v0.67
+- Reverted display to the v0.64 model. Zoom cap 4× (full-sheet canvas at high zoom went white).
+
+## v0.64
+- 0.1 mm grid visibility (zoom cap and display threshold).
+- Offset inner-R rebuild that ballooned corners was withdrawn; standard offset restored.
+
+## v0.63
+- Metric grid 0.25 mm / 0.1 mm. Fine ticks only when zoomed in; 1 mm is the major pitch.
+
+## v0.62
+- Offset inner corners no longer collapse to a point. Remaining radius or a minimum-R arc is kept.
+
+## v0.61
+- After a KiCad import commit, the settings window no longer waits for Cancel. It closes first, then shows the done message.
+
+## v0.60
+- KiCad custom pad primitives, `fp_rect`, `fp_curve`, and stroke width.
+- Logos / copper artwork no longer import as outlines only.
+
+## v0.59
+- Circles and arcs stay as circles/arcs (not polylines).
+- Supports both old form (start = center + angle) and new form (start/mid/end).
+
+## v0.58
+- Eraser can delete a single text item inside a footprint. The part body remains.
+
+## v0.57
+- Outline display layer added (front / back / silk / outline).
+- KiCad Fab separated from silk. Print can toggle outline independently.
+
+## v0.56
+- KiCad layer mapping lists all standard layers with checkboxes.
+- “Found” marks and selection state are separate.
+
+## v0.55
+- KiCad mapping UI became target-driven: pick which KiCad layer fills each WireFlow layer (front / back / silk).
+
+## v0.54
+- Full parse and draw of KiCad filled polygons (`fp_poly`).
+
+## v0.53
+- Pad drawing keeps gold pad color after layer mapping.
+
+## v0.52
+- Layer mapping on the import preview.
+
+## v0.51
+- KiCad import rewritten: oblong / rounded pads, arcs, text. Preview viewport added.
+
+## v0.50
+- Middle-button double-click window extended to 600 ms. Fit-to-drawing padding improved.
+
+## v0.49
+- Fit-to-screen uses the drawing bounding box, not the full sheet.
+
+## v0.48
+- Middle-button drag pan. Middle double-click fit-to-screen.
+
+## v0.47
+- Metric grids no longer draw leftover inch majors. Inch and metric majors are independent.
+
+## v0.46
+- True vector zoom, cursor-centered zoom, smart grid thinning when zoomed out.
+
+## v0.45
+- Inch grids (2.54 / 1.27 / 0.635 mm) and metric (1.0 / 0.5 mm).
+- Shape tool: rectangle / circle, stroke or fill (for custom pads and pours).
+
+## v0.44
+- Print color modes: color / mono solid black / negative (mask making).
+
+## v0.43
+- Mirror print (horizontal flip) via canvas transform.
+
+## v0.42
+- Print: actual-size A4 or current view, layer filters, white paper / black silk while printing.
+- Library: LED 3/5 mm, axial/radial inductors, pin headers 2–8.
+
+## v0.41
+- Resistor / capacitor size submenus (axial, SMD). Scrollable menus (max 220 px).
+
+## v0.40
+- Custom modal instead of `alert` / `prompt`.
+
+## v0.39
+- Compact right-click menu. Parts grouped: basic / IC-adapters / custom.
+
+## v0.38
+- Idle/select mode as default. Esc cancels and returns to idle.
+
+## v0.37
+- Restored the heavy A4 margin frame (3 px).
+
+## v0.36
+- Title-block bottom row: CAD name + tagline, date, revision.
+
+## v0.35
+- Product name: WireFlow CAD. Formal title block. TITLE / DESIGNER / DATE / REV editable by double-click and saved in JSON.
+
+## v0.34
+- Text sizes S/M/L. Double-click to edit placed text. Text hit-testing uses length and angle.
+
+## v0.33
+- Silk text: place, move, rotate, erase, save/load. Follows silk visibility.
+
+## v0.32
+- Colors: back/solder = red, front/component = blue. Per-layer visibility on/off.
+
+## v0.31
+- Standard parts: single pad and via. V while routing places a via and flips copper layer.
+
+## v0.30
+- Custom parts (including KiCad imports) as a separate library file. Menu cleanup.
+
+## v0.29
+- Direct KiCad `.kicad_mod` load. S-expression parser for SMD/TH pads and silk outlines.
+
+## v0.28
+- Custom rectangular SMD pads and internal copper. SOP8 / SSOP8-to-DIP8 adapters in the stock library.
+
+## v0.27
+- User custom parts from external JSON. Custom defs are also embedded in the board JSON.
+
+## v0.26
+- Save / load board as local JSON.
+
+## v0.25
+- Default routing is a free straight segment (diagonals allowed). Square / 45° / fillet only while Space is held.
+- Space rotates parts only in place/move.
+
+## v0.16–v0.24
+- Offset-copy tool, then several geometry fixes (true normal offset, arc joins, self-intersection trim, resample/smoothing, end caps, grid snap of ends). Kept as a helper, not a perfect zone engine.
+
+## v0.12–v0.15
+- Free-curve corners via Catmull-Rom, then centripetal CR, then virtual endpoints + overshoot limiter.
+
+## v0.10–v0.11
+- Corner styles: square, 45° chamfer, fillet, sized in grid units. Shift flips L-bend priority.
+
+## v0.09
+- Continuous polyline routing. Click to start/continue, right-click or Esc to finish.
+
+## v0.08
+- Toolbar removed. Operations moved to the right-click menu. Status overlay added.
+
+## v0.07
+- Eraser: click a part or trace to delete it.
+
+## v0.06
+- 555 blinker demo, then reset new documents to a blank sheet.
+
+## v0.05
+- Part origin (0,0) at pin 1. DIP ICs default landscape.
+
+## v0.04
+- Zoom +/− buttons. Undo / Redo.
+
+## v0.03
+- Fixed A4 landscape (297 × 210 mm). Frame and title block.
+
+## v0.02
+- Part library on KiCad-style millimetre sizes.
+
+## v0.01
+- First baseline: 2.54 mm grid, two layers, routing, resistor/capacitor/DIP, snap, zoom, rotate.

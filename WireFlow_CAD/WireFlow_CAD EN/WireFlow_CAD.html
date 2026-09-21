@@ -1,5 +1,5 @@
 <!--
-Version: 0.84
+Version: 0.87
 Change History:
 - v0.01–v0.50: Baseline board CAD — grid, two copper layers, parts, traces, zoom/pan, print.
 - v0.51–v0.61: KiCad .kicad_mod import, layer mapping, arcs/polygons/pad primitives.
@@ -7,12 +7,15 @@ Change History:
 - v0.77–v0.82: Settings persistence, top menu (F1–F3), selection, copy/paste, multi-move.
 - v0.83: Paste remaps traces and shapes onto the active layer.
 - v0.84: Full English UI (menus, dialogs, status, part names, prompts, filename).
+- v0.85: Mirror selected text horizontally. Context submenus flip inward when they would leave the screen.
+- v0.86: Once a submenu opens left, nested menus keep opening left.
+- v0.87: Submenu arrows no longer overlap item labels.
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>WireFlow CAD v0.84</title>
+    <title>WireFlow CAD v0.87</title>
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; background-color: #555; overflow: hidden; }
         
@@ -124,10 +127,13 @@ Change History:
             padding: 4px 0;
         }
         .menu-item {
-            padding: 4px 12px;
+            padding: 4px 22px 4px 12px;
             cursor: pointer;
             position: relative;
             color: #333;
+        }
+        #contextMenu.open-sub-left .menu-item.has-submenu {
+            padding: 4px 12px 4px 22px;
         }
         .menu-item:hover {
             background: #e0e0e0;
@@ -159,6 +165,29 @@ Change History:
         .has-submenu:hover > .submenu {
             display: block;
         }
+        .submenu.open-left {
+            left: auto;
+            right: 100%;
+        }
+        .submenu.open-up {
+            top: auto;
+            bottom: 0;
+        }
+        #contextMenu.open-sub-left .submenu {
+            left: auto;
+            right: 100%;
+        }
+        #contextMenu.open-sub-left .has-submenu::after {
+            content: '◀';
+            left: 8px;
+            right: auto;
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 9px;
+            color: #888;
+        }
+
         .has-submenu::after {
             content: '▶';
             position: absolute;
@@ -523,6 +552,7 @@ Change History:
             <div class="menu-item" onclick="copySelected(); closeMenu();">Copy (Ctrl+C)</div>
             <div class="menu-item" onclick="pasteClipboard(); closeMenu();">Paste (Ctrl+V)</div>
             <div class="menu-separator"></div>
+            <div class="menu-item" onclick="mirrorSelectedText();">Mirror text</div>
             <div class="menu-item" onclick="deleteSelected(); saveState(); redraw(); closeMenu();">Delete</div>
             <div class="menu-item" onclick="clearSelection(); redraw(); closeMenu();">Deselect (Esc)</div>
         </div>
@@ -840,7 +870,7 @@ Change History:
         title: "Wiring Diagram",
         designer: "@yas0107",
         date: new Date().getFullYear() + "/" + (new Date().getMonth() + 1) + "/" + new Date().getDate(),
-        rev: "0.84"
+        rev: "0.87"
     };
 
     let lines = [];
@@ -866,6 +896,73 @@ Change History:
     let clipboard = { lines: [], parts: [], texts: [], shapes: [], origin: {x:0, y:0} };
     let dragCache = null;
     let dragStart = null;
+
+    function wireSmartSubmenus(root) {
+        if (!root || root.dataset.smartMenu) return;
+        root.dataset.smartMenu = '1';
+        root.addEventListener('mouseover', (e) => {
+            const item = e.target.closest('.has-submenu');
+            if (!item || !root.contains(item)) return;
+            const sub = item.querySelector(':scope > .submenu');
+            if (!sub) return;
+            const inheritLeft = root.classList.contains('open-sub-left') ||
+                !!(item.parentElement && item.parentElement.closest && item.parentElement.closest('.submenu.open-left'));
+            sub.classList.remove('open-up');
+            if (inheritLeft) {
+                sub.classList.add('open-left');
+                requestAnimationFrame(() => {
+                    const rect = sub.getBoundingClientRect();
+                    if (rect.bottom > window.innerHeight - 8) sub.classList.add('open-up');
+                });
+                return;
+            }
+            sub.classList.remove('open-left');
+            requestAnimationFrame(() => {
+                const rect = sub.getBoundingClientRect();
+                if (rect.right > window.innerWidth - 8) {
+                    sub.classList.add('open-left');
+                    root.classList.add('open-sub-left');
+                }
+                if (rect.bottom > window.innerHeight - 8) sub.classList.add('open-up');
+            });
+        });
+    }
+
+    function placeContextMenu(clientX, clientY) {
+        const menu = contextMenu;
+        menu.classList.remove('open-sub-left');
+        menu.style.display = 'block';
+        menu.style.left = '0px';
+        menu.style.top = '0px';
+        const mw = menu.offsetWidth;
+        const mh = menu.offsetHeight;
+        let x = clientX;
+        let y = clientY;
+        if (x + mw > window.innerWidth - 4) x = Math.max(4, window.innerWidth - mw - 4);
+        if (y + mh > window.innerHeight - 4) y = Math.max(4, window.innerHeight - mh - 4);
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+        if (x + mw > window.innerWidth * 0.55) menu.classList.add('open-sub-left');
+        wireSmartSubmenus(menu);
+    }
+
+    window.mirrorSelectedText = function() {
+        let n = 0;
+        texts.forEach(t => {
+            if (!t.selected) return;
+            t.mirrorX = !t.mirrorX;
+            n++;
+        });
+        parts.forEach(p => {
+            if (!p.selected) return;
+            p.mirrorTexts = !p.mirrorTexts;
+            n++;
+        });
+        if (n) saveState();
+        closeMenu();
+        redraw();
+    };
+
 
     window.clearSelection = function() {
         lines.forEach(l => l.selected = false);
@@ -1591,13 +1688,7 @@ Change History:
             return;
         }
 
-        const rect = container.getBoundingClientRect();
-        contextMenu.style.display = 'block';
-        let x = e.clientX, y = e.clientY;
-        if (x + contextMenu.offsetWidth > rect.right) x = rect.right - contextMenu.offsetWidth;
-        if (y + contextMenu.offsetHeight > rect.bottom) y = rect.bottom - contextMenu.offsetHeight;
-        contextMenu.style.left = x + 'px';
-        contextMenu.style.top = y + 'px';
+        placeContextMenu(e.clientX, e.clientY);
     });
 
     function closeMenu() { contextMenu.style.display = 'none'; }
@@ -2123,7 +2214,7 @@ Change History:
                             title: "Wiring Diagram",
                             designer: "@yas0107",
                             date: new Date().getFullYear() + "/" + (new Date().getMonth() + 1) + "/" + new Date().getDate(),
-                            rev: "0.84"
+                            rev: "0.87"
                         };
                     }
                     if (isDrawing) { isDrawing = false; currentSegments = []; currentPoints = []; drawingStart = null; }
@@ -2617,8 +2708,9 @@ Change History:
         const dx = px - t.x;
         const dy = py - t.y;
         const rad = -t.rotation * Math.PI / 180;
-        const localX = dx * Math.cos(rad) - dy * Math.sin(rad);
+        let localX = dx * Math.cos(rad) - dy * Math.sin(rad);
         const localY = dx * Math.sin(rad) + dy * Math.cos(rad);
+        if (t.mirrorX) localX = -localX;
         
         const pad = 2 * MM; 
         return localX >= -pad && localX <= width + pad &&
@@ -3705,6 +3797,7 @@ Change History:
             if (e.key.toLowerCase() === 'c') { e.preventDefault(); copySelected(); return; }
             if (e.key.toLowerCase() === 'v') { e.preventDefault(); pasteClipboard(currentMousePos ? currentMousePos.x : undefined, currentMousePos ? currentMousePos.y : undefined); return; }
             if (e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); redraw(); return; }
+            if (e.key.toLowerCase() === 'm') { e.preventDefault(); mirrorSelectedText(); return; }
         }
 
         if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -3807,6 +3900,8 @@ Change History:
         texts.forEach(t => {
             if (t.selected) {
                 ctx.save(); ctx.translate(t.x, t.y); if(t.rotation) ctx.rotate(t.rotation * Math.PI/180);
+                if (t.mirrorX) ctx.scale(-1, 1);
+                ctx.font = `${(t.size||3.5)*MM}px sans-serif`;
                 const w = ctx.measureText(t.text).width; const h = (t.size||3.5)*MM;
                 ctx.strokeRect(-w/2 - 2*MM, -h/2 - 2*MM, w + 4*MM, h + 4*MM);
                 ctx.restore();
@@ -4468,6 +4563,7 @@ Change History:
                 ctx.save();
                 ctx.translate(t.x * MM, t.y * MM);
                 if (t.r) ctx.rotate(t.r * Math.PI / 180);
+                if (p.mirrorTexts) ctx.scale(-1, 1);
                 
                 let color = '#fff';
                 if (tLayer === 'front') color = '#3c64ff';
@@ -4567,6 +4663,7 @@ Change History:
             ctx.save();
             ctx.translate(t.x, t.y);
             ctx.rotate(t.rotation * Math.PI / 180);
+            if (t.mirrorX) ctx.scale(-1, 1);
             ctx.fillText(t.text, 0, 0);
             ctx.restore();
         });
