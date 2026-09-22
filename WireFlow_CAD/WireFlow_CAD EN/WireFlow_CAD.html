@@ -1,5 +1,5 @@
 <!--
-Version: 0.87
+Version: 1.02
 Change History:
 - v0.01–v0.50: Baseline board CAD — grid, two copper layers, parts, traces, zoom/pan, print.
 - v0.51–v0.61: KiCad .kicad_mod import, layer mapping, arcs/polygons/pad primitives.
@@ -10,12 +10,28 @@ Change History:
 - v0.85: Mirror selected text horizontally. Context submenus flip inward when they would leave the screen.
 - v0.86: Once a submenu opens left, nested menus keep opening left.
 - v0.87: Submenu arrows no longer overlap item labels.
+- v0.88: F1 file menu can be reopened with the mouse after it was closed.
+- v0.89: Expanded stock parts and put common footprints on the first parts menu.
+- v0.90: Copper pour zones: FULL / CROSS rectangles with + thermal relief on through-holes.
+- v0.91: Only marked traces/parts are cut out of a pour. Unmarked through-holes stay on thermals.
+- v0.92: Pour is selected by its border only, so traces and parts inside stay clickable.
+- v0.93: Pour clearance can be set from 0.2 to 1.0 mm.
+- v0.94: Hit-test prefers traces over parts so keepout can be set on wiring.
+- v0.95: Keepout can target a single pad. Thermal spoke width follows current trace width.
+- v0.96: Separate Connect / Disconnect pour commands instead of a toggle.
+- v0.97: Traces and pads stay isolated from pour by default. Only Connect attaches them.
+- v0.98: Stock TH pads are 1.6 mm dia / 0.8 mm hole so 2.54 mm pitch no longer merges.
+- v0.99: Title frame always draws, even if silk is hidden. Visibility load is merged safely.
+- v0.100: Connect-to-pour on a multi-pin part applies only to the clicked pad.
+- v1.00: Milestone. Copper pour FULL/CROSS with explicit connect/disconnect. Thermals are redrawn from the connect flag.
+- v1.01: Trace width changes thermal spokes only. CROSS hatch thickness stays fixed.
+- v1.02: Pour clearance follows the real spline path, not the control polyline.
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>WireFlow CAD v0.87</title>
+    <title>WireFlow CAD v1.02</title>
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; background-color: #555; overflow: hidden; }
         
@@ -468,6 +484,21 @@ Change History:
                     <div class="menu-item" onclick="setTool('shape', {shapeType: 'rect', fill: true})">Rectangle (Filled)</div>
                     <div class="menu-item" onclick="setTool('shape', {shapeType: 'circle', fill: false})">Circle (stroke)</div>
                     <div class="menu-item" onclick="setTool('shape', {shapeType: 'circle', fill: true})">Circle (filled)</div>
+                    <div class="menu-separator"></div>
+                    <div class="menu-item" onclick="setPourKeepout(true);">Disconnect selection from pour</div>
+                    <div class="menu-item" onclick="setPourKeepout(false);">Connect selection to pour</div>
+                    <div class="menu-item" onclick="setTool('shape', {shapeType: 'zone', pour: 'full'})">Copper pour FULL</div>
+                    <div class="menu-item" onclick="setTool('shape', {shapeType: 'zone', pour: 'cross'})">Copper pour CROSS</div>
+                    <div class="menu-item has-submenu">Pour clearance
+                        <div class="submenu">
+                            <div class="menu-item" onclick="setZoneClearance(0.2)">0.2 mm</div>
+                            <div class="menu-item" onclick="setZoneClearance(0.3)">0.3 mm</div>
+                            <div class="menu-item" onclick="setZoneClearance(0.4)">0.4 mm</div>
+                            <div class="menu-item" onclick="setZoneClearance(0.5)">0.5 mm</div>
+                            <div class="menu-item" onclick="setZoneClearance(0.8)">0.8 mm</div>
+                            <div class="menu-item" onclick="setZoneClearance(1.0)">1.0 mm</div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="menu-item has-submenu">Place part
@@ -476,6 +507,12 @@ Change History:
                         <div class="submenu scrollable-menu">
                             <div class="menu-item" onclick="setTool('place', {part: 'land'})">Single pad</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'via'})">Via</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'resistor'})">Resistor 1/4W</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'capacitor'})">Ceramic capacitor</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'led_3mm'})">LED 3 mm</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'to92'})">Transistor TO-92</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'tactile'})">Tactile switch</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'jumper'})">Jumper</div>
                             <div class="menu-item has-submenu">Resistors
                                 <div class="submenu">
                                     <div class="menu-item" onclick="setTool('place', {part: 'resistor'})">Axial 1/4W</div>
@@ -514,6 +551,7 @@ Change History:
                             <div class="menu-item" onclick="setTool('place', {part: 'pinheader_3'})">Pin header 3Pin</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'pinheader_4'})">Pin header 4Pin</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'pinheader_5'})">Pin header 5Pin</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'pinheader_6'})">Pin header 6Pin</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'pinheader_8'})">Pin header 8Pin</div>
                         </div>
                     </div>
@@ -521,8 +559,19 @@ Change History:
                         <div class="submenu">
                             <div class="menu-item" onclick="setTool('place', {part: 'dip8'})">DIP8</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'dip14'})">DIP14</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'dip16'})">DIP16</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'sop8_dip8'})">SOP8 adapter</div>
                             <div class="menu-item" onclick="setTool('place', {part: 'ssop8_dip8'})">SSOP8 adapter</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'to92'})">Transistor TO-92</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'to220'})">TO-220</div>
+                        </div>
+                    </div>
+                    <div class="menu-item has-submenu">Switches / terminals
+                        <div class="submenu">
+                            <div class="menu-item" onclick="setTool('place', {part: 'tactile'})">Tactile switch 6 mm</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'jumper'})">Jumper 2.54</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'terminal2'})">Terminal 2P</div>
+                            <div class="menu-item" onclick="setTool('place', {part: 'crystal'})">Crystal HC-49</div>
                         </div>
                     </div>
                     <div class="menu-item has-submenu">Custom parts
@@ -552,6 +601,8 @@ Change History:
             <div class="menu-item" onclick="copySelected(); closeMenu();">Copy (Ctrl+C)</div>
             <div class="menu-item" onclick="pasteClipboard(); closeMenu();">Paste (Ctrl+V)</div>
             <div class="menu-separator"></div>
+            <div class="menu-item" onclick="setPourKeepout(true);">Disconnect from pour</div>
+            <div class="menu-item" onclick="setPourKeepout(false);">Connect to pour</div>
             <div class="menu-item" onclick="mirrorSelectedText();">Mirror text</div>
             <div class="menu-item" onclick="deleteSelected(); saveState(); redraw(); closeMenu();">Delete</div>
             <div class="menu-item" onclick="clearSelection(); redraw(); closeMenu();">Deselect (Esc)</div>
@@ -622,7 +673,10 @@ Change History:
             cornerGridSize: cornerGridSize,
             penWidth: currentWidth,
             visibility: visibility,
-            showHelp: showHelp
+            showHelp: showHelp,
+            zoneClearanceMM: zoneClearanceMM,
+            zoneSpokeMM: zoneSpokeMM,
+            zoneHatchMM: zoneHatchMM
         };
         localStorage.setItem('WireFlowCAD_Config', JSON.stringify(config));
     }
@@ -637,7 +691,7 @@ Change History:
                 if (parsed.cornerGridSize !== undefined) cornerGridSize = parsed.cornerGridSize;
                 if (parsed.penWidth !== undefined) currentWidth = parsed.penWidth;
                 if (parsed.visibility !== undefined) {
-                    visibility = parsed.visibility;
+                    visibility = Object.assign({ back: true, front: true, silk: true, outline: true }, parsed.visibility);
                     ['back', 'front', 'silk', 'outline'].forEach(type => {
                         const el = document.getElementById(
                             type === 'back' ? 'toggleShowBack' :
@@ -654,6 +708,9 @@ Change History:
                     showHelp = parsed.showHelp;
                     document.getElementById('statusOverlay').style.display = showHelp ? 'block' : 'none';
                 }
+                if (parsed.zoneClearanceMM !== undefined) zoneClearanceMM = parsed.zoneClearanceMM;
+                if (parsed.zoneSpokeMM !== undefined) zoneSpokeMM = parsed.zoneSpokeMM;
+                if (parsed.zoneHatchMM !== undefined) zoneHatchMM = parsed.zoneHatchMM;
             } catch (e) {
                 console.error("Config load error", e);
             }
@@ -670,7 +727,7 @@ Change History:
         const subF1 = document.getElementById('subF1');
         if (subF1) {
             subF1.classList.remove('active');
-            subF1.style.display = 'none';
+            subF1.style.display = '';
         }
     }
 
@@ -870,7 +927,7 @@ Change History:
         title: "Wiring Diagram",
         designer: "@yas0107",
         date: new Date().getFullYear() + "/" + (new Date().getMonth() + 1) + "/" + new Date().getDate(),
-        rev: "0.87"
+        rev: "1.02"
     };
 
     let lines = [];
@@ -945,6 +1002,82 @@ Change History:
         if (x + mw > window.innerWidth * 0.55) menu.classList.add('open-sub-left');
         wireSmartSubmenus(menu);
     }
+
+
+    window.setZoneClearance = function(mm) {
+        zoneClearanceMM = mm;
+        shapes.forEach(s => {
+            if (s.selected && s.type === 'zone') s.clearance = mm;
+        });
+        saveConfig();
+        saveState();
+        closeMenu();
+        redraw();
+    };
+    let lastPadHit = null;
+
+    function hitNearestPad(rawX, rawY) {
+        let best = null;
+        let bestD = 12;
+        parts.forEach(p => {
+            const def = partLibrary[p.type];
+            if (!def || !def.pads) return;
+            def.pads.forEach((pad, idx) => {
+                const wpos = padWorldPos(p, pad);
+                const d = Math.hypot(rawX - wpos.x, rawY - wpos.y);
+                const rad = Math.max(pad.w || 1.5*MM, pad.h || 1.5*MM) / 2 + 6;
+                if (d <= rad && d < bestD) {
+                    bestD = d;
+                    best = { part: p, index: idx };
+                }
+            });
+        });
+        return best;
+    }
+
+    window.setPourKeepout = function(on) {
+        let n = 0;
+        lines.forEach(l => {
+            if (!l.selected) return;
+            l.keepout = !!on;
+            l.pourConnect = !on;
+            n++;
+        });
+        parts.forEach(p => {
+            if (!p.selected) return;
+            if (lastPadHit && lastPadHit.part === p) {
+                if (!p.keepoutPads) p.keepoutPads = [];
+                if (!p.connectPads) p.connectPads = [];
+                const i = lastPadHit.index;
+                const k = p.keepoutPads.indexOf(i);
+                const c = p.connectPads.indexOf(i);
+                if (on) {
+                    if (k < 0) p.keepoutPads.push(i);
+                    if (c >= 0) p.connectPads.splice(c, 1);
+                } else {
+                    if (c < 0) p.connectPads.push(i);
+                    if (k >= 0) p.keepoutPads.splice(k, 1);
+                }
+            } else {
+                const def = partLibrary[p.type];
+                const nPads = def && def.pads ? def.pads.length : 0;
+                if (nPads <= 1) {
+                    p.keepout = !!on;
+                    p.pourConnect = !on;
+                    p.connectPads = [];
+                    p.keepoutPads = [];
+                } else if (on) {
+                    p.pourConnect = false;
+                    p.connectPads = [];
+                }
+            }
+            n++;
+        });
+        if (n) saveState();
+        closeMenu();
+        redraw();
+    };
+    window.togglePourKeepout = function() { setPourKeepout(true); };
 
     window.mirrorSelectedText = function() {
         let n = 0;
@@ -1060,21 +1193,21 @@ Change History:
     };
 
     function hitTestAny(rawX, rawY, snapX, snapY) {
-        for (let i = shapes.length - 1; i >= 0; i--) {
-            if (!layerVisible(shapes[i].layer)) continue;
-            if (hitTestShape(shapes[i], rawX, rawY)) return shapes[i];
-        }
-        for (let i = parts.length - 1; i >= 0; i--) {
-            if (Math.hypot(parts[i].x - snapX, parts[i].y - snapY) < GRID_SIZE * 1.5) return parts[i];
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (!layerVisible(lines[i].layer)) continue;
+            if (getDistToLine(rawX, rawY, lines[i]) < 15) return lines[i];
         }
         if (visibility.silk) {
             for (let i = texts.length - 1; i >= 0; i--) {
                 if (isPointInText(rawX, rawY, texts[i])) return texts[i];
             }
         }
-        for (let i = lines.length - 1; i >= 0; i--) {
-            if (!layerVisible(lines[i].layer)) continue;
-            if (getDistToLine(rawX, rawY, lines[i]) < 15) return lines[i];
+        for (let i = parts.length - 1; i >= 0; i--) {
+            if (Math.hypot(parts[i].x - snapX, parts[i].y - snapY) < GRID_SIZE * 1.5) return parts[i];
+        }
+        for (let i = shapes.length - 1; i >= 0; i--) {
+            if (!layerVisible(shapes[i].layer)) continue;
+            if (hitTestShape(shapes[i], rawX, rawY)) return shapes[i];
         }
         return null;
     }
@@ -1179,8 +1312,8 @@ Change History:
         const row = 7.62 * MM;
         const pads = [];
         const halfPins = pins / 2;
-        for (let i = 0; i < halfPins; i++) { pads.push({x: i * pitch, y: 0}); }
-        for (let i = 0; i < halfPins; i++) { pads.push({x: (halfPins - 1 - i) * pitch, y: -row}); }
+        for (let i = 0; i < halfPins; i++) { pads.push({x: i * pitch, y: 0, w: 1.6*MM, drill: 0.8*MM}); }
+        for (let i = 0; i < halfPins; i++) { pads.push({x: (halfPins - 1 - i) * pitch, y: -row, w: 1.6*MM, drill: 0.8*MM}); }
         return {
             pads: pads,
             drawSilk: (ctx) => {
@@ -1210,7 +1343,7 @@ Change History:
     }
 
     const partLibrary = {
-        'land': { name: 'Single pad', pads: [{x: 0, y: 0}], drawSilk: (ctx) => {} },
+        'land': { name: 'Single pad', pads: [{x: 0, y: 0, w: 1.6*MM, drill: 0.8*MM}], drawSilk: (ctx) => {} },
         'via': { name: 'Via', pads: [{x: 0, y: 0, shape: 'circle', w: 1.2 * MM, drill: 0.6 * MM}], drawSilk: (ctx) => {} },
         
         'resistor': {
@@ -1298,6 +1431,78 @@ Change History:
             }
         },
 
+
+        'to92': {
+            name: 'Transistor TO-92',
+            pads: [
+                {x: 0, y: 0, w: 1.0*MM, drill: 0.6*MM},
+                {x: 1.27 * MM, y: 0, w: 1.0*MM, drill: 0.6*MM},
+                {x: 2.54 * MM, y: 0, w: 1.0*MM, drill: 0.6*MM}
+            ],
+            drawSilk: (ctx) => {
+                ctx.beginPath();
+                ctx.arc(1.27 * MM, -1.2 * MM, 2.2 * MM, Math.PI * 0.15, Math.PI * 0.85, true);
+                ctx.lineTo(-0.3 * MM, 0.4 * MM);
+                ctx.lineTo(2.84 * MM, 0.4 * MM);
+                ctx.closePath();
+                ctx.stroke();
+            }
+        },
+        'to220': {
+            name: 'Regulator TO-220',
+            pads: [
+                {x: 0, y: 0},
+                {x: 2.54 * MM, y: 0},
+                {x: 5.08 * MM, y: 0}
+            ],
+            drawSilk: (ctx) => {
+                ctx.strokeRect(-1.5 * MM, -8 * MM, 8.08 * MM, 7.2 * MM);
+                ctx.strokeRect(0.5 * MM, -10.2 * MM, 4.08 * MM, 2.2 * MM);
+            }
+        },
+        'tactile': {
+            name: 'Tactile switch 6 mm',
+            pads: [
+                {x: 0, y: 0},
+                {x: 6.5 * MM, y: 0},
+                {x: 0, y: -4.5 * MM},
+                {x: 6.5 * MM, y: -4.5 * MM}
+            ],
+            drawSilk: (ctx) => {
+                ctx.strokeRect(-0.8 * MM, -5.3 * MM, 8.1 * MM, 6.1 * MM);
+                ctx.beginPath(); ctx.arc(3.25 * MM, -2.25 * MM, 1.6 * MM, 0, Math.PI * 2); ctx.stroke();
+            }
+        },
+        'crystal': {
+            name: 'Crystal HC-49',
+            pads: [{x: 0, y: 0}, {x: 4.88 * MM, y: 0}],
+            drawSilk: (ctx) => {
+                ctx.strokeRect(-1.2 * MM, -2.2 * MM, 7.28 * MM, 4.4 * MM);
+                ctx.beginPath();
+                ctx.moveTo(-1.2 * MM, -1.2 * MM);
+                ctx.lineTo(-1.2 * MM, 1.2 * MM);
+                ctx.moveTo(6.08 * MM, -1.2 * MM);
+                ctx.lineTo(6.08 * MM, 1.2 * MM);
+                ctx.stroke();
+            }
+        },
+        'terminal2': {
+            name: 'Terminal 2P',
+            pads: [{x: 0, y: 0}, {x: 5.08 * MM, y: 0}],
+            drawSilk: (ctx) => {
+                ctx.strokeRect(-2.0 * MM, -3.2 * MM, 9.08 * MM, 6.4 * MM);
+                ctx.strokeRect(-1.1 * MM, -2.3 * MM, 3.2 * MM, 4.6 * MM);
+                ctx.strokeRect(2.98 * MM, -2.3 * MM, 3.2 * MM, 4.6 * MM);
+            }
+        },
+        'jumper': {
+            name: 'Jumper 2.54',
+            pads: [{x: 0, y: 0}, {x: 2.54 * MM, y: 0}],
+            drawSilk: (ctx) => {
+                ctx.strokeRect(-1.0 * MM, -1.1 * MM, 4.54 * MM, 2.2 * MM);
+            }
+        },
+        'pinheader_6': generatePinHeader(6),
         'pinheader_2': generatePinHeader(2),
         'pinheader_3': generatePinHeader(3),
         'pinheader_4': generatePinHeader(4),
@@ -1306,6 +1511,7 @@ Change History:
 
         'dip8': Object.assign({ name: 'DIP8' }, generateDIP(8)),
         'dip14': Object.assign({ name: 'DIP14' }, generateDIP(14)),
+        'dip16': Object.assign({ name: 'DIP16' }, generateDIP(16)),
         'sop8_dip8': {
             name: 'SOP8 adapter',
             pads: [
@@ -1484,8 +1690,8 @@ Change History:
         } else if (currentTool === 'text') {
             statusHtml += ` ("${tempTextStr}" ${currentTextSize}mm)`;
         } else if (currentTool === 'shape') {
-            const sName = shapeTypeVar === 'rect' ? 'Rectangle' : 'Circle';
-            const fName = shapeFillVar ? 'Filled' : 'Stroke only';
+            const sName = shapeTypeVar === 'zone' ? ('Pour ' + ((shapePourVar==='cross')?'CROSS':'FULL')) : (shapeTypeVar === 'rect' ? 'Rectangle' : 'Circle');
+            const fName = shapeTypeVar === 'zone' ? 'pad cut + thermal' : (shapeFillVar ? 'Filled' : 'Stroke only');
             statusHtml += ` (${sName} / ${fName})`;
         }
         
@@ -1544,7 +1750,7 @@ Change History:
                 const dist = Math.hypot(dx, dy);
                 if (currentTool === 'shape' && shapeTypeVar === 'circle') {
                     relEl.textContent = `REL dX: ${formatGridMM(dx).padStart(7)}  dY: ${formatGridMM(dy).padStart(7)}  R: ${formatGridMM(dist).padStart(7)}  D: ${formatGridMM(dist * 2).padStart(7)}`;
-                } else if (currentTool === 'shape' && shapeTypeVar === 'rect') {
+                } else if (currentTool === 'shape' && (shapeTypeVar === 'rect' || shapeTypeVar === 'zone')) {
                     relEl.textContent = `REL dX: ${formatGridMM(dx).padStart(7)}  dY: ${formatGridMM(dy).padStart(7)}  W: ${formatGridMM(Math.abs(dx)).padStart(7)}  H: ${formatGridMM(Math.abs(dy)).padStart(7)}`;
                 } else {
                     relEl.textContent = `REL dX: ${formatGridMM(dx).padStart(7)}  dY: ${formatGridMM(dy).padStart(7)}  L: ${formatGridMM(dist).padStart(7)}`;
@@ -1571,6 +1777,7 @@ Change History:
         if (options.part) currentPartType = options.part;
         if (options.shapeType) shapeTypeVar = options.shapeType;
         if (options.fill !== undefined) shapeFillVar = options.fill;
+        if (options.pour) shapePourVar = options.pour;
         tempPart = null;
         tempTextObj = null;
         offsetState = 0;
@@ -1980,7 +2187,7 @@ Change History:
             ctx.fill();
             if (padStroke) { ctx.strokeStyle = padStroke; ctx.lineWidth=1; ctx.stroke(); }
         } else {
-            const r = pad.w ? pad.w / 2 : 1.2 * MM;
+            const r = pad.w ? pad.w / 2 : 0.8 * MM;
             ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
             if (padStroke) { ctx.strokeStyle = padStroke; ctx.lineWidth=1; ctx.stroke(); }
         }
@@ -2214,7 +2421,7 @@ Change History:
                             title: "Wiring Diagram",
                             designer: "@yas0107",
                             date: new Date().getFullYear() + "/" + (new Date().getMonth() + 1) + "/" + new Date().getDate(),
-                            rev: "0.87"
+                            rev: "1.02"
                         };
                     }
                     if (isDrawing) { isDrawing = false; currentSegments = []; currentPoints = []; drawingStart = null; }
@@ -2718,7 +2925,16 @@ Change History:
     }
     
     function hitTestShape(s, px, py) {
-        if (s.type === 'rect') {
+        if (s.type === 'zone') {
+            const rx = Math.min(s.x, s.x + s.w);
+            const ry = Math.min(s.y, s.y + s.h);
+            const rw = Math.abs(s.w);
+            const rh = Math.abs(s.h);
+            const t = 8;
+            const inBox = px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+            const inInner = px >= rx + t && px <= rx + rw - t && py >= ry + t && py <= ry + rh - t;
+            return inBox && !inInner;
+        } else if (s.type === 'rect') {
             const rx = Math.min(s.x, s.x + s.w);
             const ry = Math.min(s.y, s.y + s.h);
             const rw = Math.abs(s.w);
@@ -3725,7 +3941,9 @@ Change History:
             let maxY = Math.max(selectStart.y, selectEnd.y);
 
             if (maxX - minX < 2 && maxY - minY < 2) {
+                lastPadHit = hitNearestPad(rawX, rawY);
                 let hitItem = hitTestAny(rawX, rawY, snapX, snapY);
+                if (!hitItem && lastPadHit) hitItem = lastPadHit.part;
                 if (hitItem) {
                     if (!e.shiftKey && !hitItem.selected) clearSelection();
                     hitItem.selected = !hitItem.selected;
@@ -3767,10 +3985,14 @@ Change History:
                     type: shapeTypeVar,
                     layer: currentLayer,
                     fill: shapeFillVar,
+                    pour: shapePourVar,
+                    clearance: zoneClearanceMM,
+                    spoke: zoneSpokeMM,
+                    hatch: zoneHatchMM,
                     width: currentWidth,
                     selected: true
                 };
-                if (shapeTypeVar === 'rect') {
+                if (shapeTypeVar === 'rect' || shapeTypeVar === 'zone') {
                     newShape.x = Math.min(shapeStart.x, snapX);
                     newShape.y = Math.min(shapeStart.y, snapY);
                     newShape.w = Math.abs(snapX - shapeStart.x);
@@ -3810,8 +4032,12 @@ Change History:
             e.preventDefault();
             const sub = document.getElementById('subF1');
             if (sub) {
-                if (sub.style.display === 'block') { sub.style.display = 'none'; sub.classList.remove('active'); } 
-                else { sub.style.display = 'block'; sub.classList.add('active'); }
+                if (sub.classList.contains('active')) {
+                    sub.classList.remove('active');
+                    sub.style.display = '';
+                } else {
+                    sub.classList.add('active');
+                }
             }
             return;
         } else if (e.key === 'F2') {
@@ -3909,7 +4135,7 @@ Change History:
         });
         shapes.forEach(s => {
             if (s.selected) {
-                if (s.type === 'rect') ctx.strokeRect(s.x-2, s.y-2, s.w+4, s.h+4);
+                if (s.type === 'rect' || s.type === 'zone') ctx.strokeRect(s.x-2, s.y-2, s.w+4, s.h+4);
                 else if (s.type === 'circle') { ctx.beginPath(); ctx.arc(s.x, s.y, s.r+2, 0, Math.PI*2); ctx.stroke(); }
             }
         });
@@ -3946,9 +4172,7 @@ Change History:
         ctx.fillRect(0, 0, A4_W, A4_H);
         
         drawGrid();
-        if (visibility.silk) {
-            drawFrame();
-        }
+        drawFrame();
         if (isPrinting) drawPrintScaleBar();
         drawShapes();
         drawLines();
@@ -3966,7 +4190,7 @@ Change History:
                 fill: shapeFillVar,
                 width: currentWidth
             };
-            if (shapeTypeVar === 'rect') {
+            if (shapeTypeVar === 'rect' || shapeTypeVar === 'zone') {
                 tempShape.x = Math.min(shapeStart.x, currentMousePos.x);
                 tempShape.y = Math.min(shapeStart.y, currentMousePos.y);
                 tempShape.w = Math.abs(currentMousePos.x - shapeStart.x);
@@ -4179,6 +4403,178 @@ Change History:
         return '60, 100, 255';
     }
 
+    let zoneClearanceMM = 0.4;
+    let zoneSpokeMM = 0.4;
+    let zoneHatchMM = 1.27;
+    let shapePourVar = 'full';
+
+    function padWorldPos(part, pad) {
+        const rad = (part.rotation || 0) * Math.PI / 180;
+        const c = Math.cos(rad), s = Math.sin(rad);
+        return {
+            x: part.x + pad.x * c - pad.y * s,
+            y: part.y + pad.x * s + pad.y * c
+        };
+    }
+
+    function isSmdPad(pad) {
+        return pad.shape === 'rect' || pad.shape === 'roundrect' || pad.shape === 'oval';
+    }
+
+
+    function collectLayerPads(layer) {
+        const out = [];
+        parts.forEach(p => {
+            const def = partLibrary[p.type];
+            if (!def || !def.pads) return;
+            def.pads.forEach((pad, idx) => {
+                const pLayer = pad.layer || 'both';
+                if (pLayer === 'silk' || pLayer === 'outline') return;
+                if (pLayer === 'front' && layer !== 'front') return;
+                if (pLayer === 'back' && layer !== 'back') return;
+                const wpos = padWorldPos(p, pad);
+                const w = pad.w || (1.6 * MM);
+                const h = pad.h || w;
+                const drill = pad.drill !== undefined ? pad.drill : (isSmdPad(pad) ? 0 : 0.8 * MM);
+                const smd = isSmdPad(pad) && drill <= 0;
+                out.push({
+                    x: wpos.x, y: wpos.y,
+                    w: w, h: h,
+                    shape: pad.shape || 'circle',
+                    smd: smd,
+                    keepout: smd || !((p.pourConnect && !(p.keepoutPads && p.keepoutPads.indexOf(idx) >= 0)) || (p.connectPads && p.connectPads.indexOf(idx) >= 0)),
+                    radius: Math.max(w, h) / 2
+                });
+            });
+        });
+        return out;
+    }
+
+    function strokeLineLocal(octx, line, ox, oy) {
+        const shift = (pt) => ({ x: pt.x - ox, y: pt.y - oy });
+        octx.beginPath();
+        if (line.type === 'line' || !line.type) {
+            const a = shift({x: line.x1, y: line.y1});
+            const b = shift({x: line.x2, y: line.y2});
+            octx.moveTo(a.x, a.y); octx.lineTo(b.x, b.y);
+        } else if (line.points && line.points.length) {
+            const src = (line.type === 'spline') ? sampleSplinePoints(line.points, 24) : line.points;
+            const p0 = shift(src[0]);
+            octx.moveTo(p0.x, p0.y);
+            for (let i = 1; i < src.length; i++) {
+                const p = shift(src[i]);
+                octx.lineTo(p.x, p.y);
+            }
+            if (line.startCap) {
+                const c = shift(line.startCap);
+                octx.moveTo(c.x, c.y);
+                octx.lineTo(p0.x, p0.y);
+            }
+            if (line.endCap) {
+                const last = shift(line.points[line.points.length - 1]);
+                const c = shift(line.endCap);
+                octx.moveTo(last.x, last.y);
+                octx.lineTo(c.x, c.y);
+            }
+        } else if (line.type === 'arc') {
+            const a = shift({x: line.x1, y: line.y1});
+            const c = shift({x: line.cx, y: line.cy});
+            const b = shift({x: line.x2, y: line.y2});
+            octx.moveTo(a.x, a.y);
+            octx.quadraticCurveTo(c.x, c.y, b.x, b.y);
+        }
+        octx.stroke();
+    }
+
+    function drawZone(z) {
+        const x = Math.min(z.x, z.x + z.w);
+        const y = Math.min(z.y, z.y + z.h);
+        const w = Math.abs(z.w);
+        const h = Math.abs(z.h);
+        if (w < 1 || h < 1) return;
+
+        let baseColor = getLayerColor(z.layer);
+        if (isPrinting) {
+            if (printColorMode === 'mono') baseColor = '0, 0, 0';
+            else if (printColorMode === 'nega') baseColor = '255, 255, 255';
+        }
+        const layerAlpha = (z.layer === currentLayer || isPrinting) ? 1.0 : 0.4;
+        const colorStr = 'rgba(' + baseColor + ', ' + layerAlpha + ')';
+        const clearance = (z.clearance != null ? z.clearance : zoneClearanceMM) * MM;
+        const spokeW = currentWidth;
+        const hatch = (z.hatch != null ? z.hatch : zoneHatchMM) * MM;
+        const pour = z.pour || 'full';
+
+        const off = document.createElement('canvas');
+        off.width = Math.max(2, Math.ceil(w));
+        off.height = Math.max(2, Math.ceil(h));
+        const octx = off.getContext('2d');
+        octx.fillStyle = colorStr;
+        octx.strokeStyle = colorStr;
+
+        if (pour === 'cross') {
+            octx.lineWidth = 0.25 * MM;
+            octx.beginPath();
+            const span = w + h;
+            for (let i = -span; i <= span; i += hatch) {
+                octx.moveTo(i, 0); octx.lineTo(i + h, h);
+                octx.moveTo(i, 0); octx.lineTo(i - h, h);
+            }
+            octx.stroke();
+        } else {
+            octx.fillRect(0, 0, w, h);
+        }
+
+        octx.globalCompositeOperation = 'destination-out';
+        octx.lineCap = 'round';
+        octx.lineJoin = 'round';
+        lines.forEach(line => {
+            if (line.pourConnect) return;
+            if (line.layer !== z.layer) return;
+            octx.lineWidth = (line.width || 4) + clearance * 2;
+            strokeLineLocal(octx, line, x, y);
+        });
+
+        const pads = collectLayerPads(z.layer);
+        pads.forEach(pad => {
+            const lx = pad.x - x;
+            const ly = pad.y - y;
+            if (lx < -pad.radius - clearance || ly < -pad.radius - clearance ||
+                lx > w + pad.radius + clearance || ly > h + pad.radius + clearance) return;
+
+            octx.globalCompositeOperation = 'destination-out';
+            octx.beginPath();
+            if (pad.shape === 'rect') {
+                octx.rect(lx - pad.w/2 - clearance, ly - pad.h/2 - clearance, pad.w + clearance * 2, pad.h + clearance * 2);
+            } else {
+                octx.arc(lx, ly, pad.radius + clearance, 0, Math.PI * 2);
+            }
+            octx.fill();
+
+            if (!pad.keepout && !pad.smd) {
+                octx.globalCompositeOperation = 'source-over';
+                octx.strokeStyle = colorStr;
+                octx.lineWidth = spokeW;
+                octx.lineCap = 'butt';
+                const inner = pad.radius * 0.2;
+                const outer = pad.radius + clearance + spokeW;
+                octx.beginPath();
+                octx.moveTo(lx - outer, ly); octx.lineTo(lx - inner, ly);
+                octx.moveTo(lx + inner, ly); octx.lineTo(lx + outer, ly);
+                octx.moveTo(lx, ly - outer); octx.lineTo(lx, ly - inner);
+                octx.moveTo(lx, ly + inner); octx.lineTo(lx, ly + outer);
+                octx.stroke();
+            }
+        });
+
+        ctx.drawImage(off, x, y, w, h);
+        ctx.save();
+        ctx.strokeStyle = colorStr;
+        ctx.lineWidth = 0.2 * MM;
+        ctx.strokeRect(x, y, w, h);
+        ctx.restore();
+    }
+
     function drawSingleShape(s) {
         if (!layerVisible(s.layer)) return;
 
@@ -4190,6 +4586,8 @@ Change History:
         
         const layerAlpha = (s.layer === currentLayer || isPrinting) ? 1.0 : 0.4;
         const colorStr = `rgba(${baseColor}, ${layerAlpha})`;
+
+        if (s.type === 'zone') { drawZone(s); return; }
 
         ctx.beginPath();
         if (s.type === 'rect') {
@@ -4630,7 +5028,7 @@ Change History:
                 ctx.fill();
                 if (padStroke) { ctx.strokeStyle = padStroke; ctx.lineWidth=1; ctx.stroke(); }
             } else {
-                const r = pad.w ? pad.w / 2 : 1.2 * MM;
+                const r = pad.w ? pad.w / 2 : 0.8 * MM;
                 ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI*2); ctx.fill();
                 if (padStroke) { ctx.strokeStyle = padStroke; ctx.lineWidth=1; ctx.stroke(); }
             }
